@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>LLM Text Adventure</title>
+    <style>
+        body { background: #000; color: #fff; font-family: monospace; }
+        #terminal { white-space: pre; }
+    </style>
+</head>
+<body>
+    <pre id="terminal"></pre>
+    <script type="module">
+        import init, { start_game, send_input } from './pkg/llm_text_adventure.js';
+
+        async function run() {
+            await init();
+            // Start game
+            // Note: You need a local LLM running at this URL with CORS enabled
+            start_game("http://localhost:1234", "local-model");
+
+            // Handle input
+            document.addEventListener('keydown', (e) => {
+                if (['Enter', 'Backspace', 'Escape'].includes(e.key) || e.key.length === 1) {
+                    send_input(e.key);
+                }
+            });
+        }
+
+        run();
+    </script>
+</body>
+</html>
