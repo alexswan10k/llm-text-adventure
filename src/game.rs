@@ -1,9 +1,12 @@
-use crate::model::{WorldState, WorldUpdate, Location, Item};
+use crate::model::{WorldState, WorldUpdate, Location};
 use crate::llm::LlmClient;
+use crate::save::{SaveManager, SaveInfo};
 use anyhow::{Result, Context};
 use std::collections::HashMap;
 
+#[derive(PartialEq)]
 pub enum GameState {
+    SplashScreen,
     WaitingForInput,
     Processing,
     UpdatingWorld,
@@ -13,47 +16,119 @@ pub enum GameState {
 pub struct Game {
     pub world: WorldState,
     pub llm_client: LlmClient,
+    pub save_manager: SaveManager,
     pub last_narrative: String,
     pub state: GameState,
+    pub current_save_path: Option<String>,
+    pub save_list: Vec<SaveInfo>,
+    pub selected_save_index: usize,
 }
 
 impl Game {
     pub fn new(llm_client: LlmClient) -> Self {
-        let mut world = WorldState::new();
-        // Initialize with a default location if empty
-        if world.locations.is_empty() {
-            let start_loc = Location {
-                id: "start".to_string(),
-                name: "The Beginning".to_string(),
-                description: "You stand in a void of potential. Anything can happen here.".to_string(),
-                items: vec![],
-                cached_image_path: None,
-                image_prompt: "A swirling void of colors and shapes, representing potential.".to_string(),
-            };
-            world.locations.insert("start".to_string(), start_loc);
-        }
+        let save_manager = SaveManager::new();
+        let save_list = save_manager.list_saves().unwrap_or_default();
 
         Self {
-            world,
+            world: WorldState::new(),
             llm_client,
-            last_narrative: "Welcome to the Infinite Text Adventure. What do you want to do?".to_string(),
-            state: GameState::WaitingForInput,
+            save_manager,
+            last_narrative: "Welcome to the Infinite Text Adventure.".to_string(),
+            state: GameState::SplashScreen,
+            current_save_path: None,
+            save_list,
+            selected_save_index: 0,
         }
     }
 
     pub async fn process_input(&mut self, input: &str) -> Result<()> {
+        match self.state {
+            GameState::SplashScreen => self.handle_splash_input(input).await,
+            GameState::WaitingForInput => self.handle_game_input(input).await,
+            _ => Ok(()),
+        }
+    }
+
+    async fn handle_splash_input(&mut self, input: &str) -> Result<()> {
+        match input {
+            "new" => {
+                self.world = WorldState::new();
+                // Initialize default location if needed
+                if self.world.locations.is_empty() {
+                    let start_loc = Location {
+                        id: "start".to_string(),
+                        name: "The Beginning".to_string(),
+                        description: "You stand in a void of potential. Anything can happen here.".to_string(),
+                        items: vec![],
+                        actors: vec![],
+                        exits: HashMap::new(),
+                        cached_image_path: None,
+                        image_prompt: "A swirling void of colors and shapes, representing potential.".to_string(),
+                    };
+                    self.world.locations.insert("start".to_string(), start_loc);
+                }
+                self.current_save_path = Some(self.save_manager.create_new_save("new_world", &self.world)?);
+                self.state = GameState::WaitingForInput;
+                self.last_narrative = "You have created a new world. What do you want to do?".to_string();
+            }
+            "load" => {
+                if !self.save_list.is_empty() {
+                    let save = &self.save_list[self.selected_save_index];
+                    self.world = self.save_manager.load_save(&save.filename)?;
+                    self.current_save_path = Some(save.filename.clone());
+                    self.state = GameState::WaitingForInput;
+                    self.last_narrative = format!("Loaded world: {}. What do you want to do?", save.filename);
+                }
+            }
+            "up" => {
+                if self.selected_save_index > 0 {
+                    self.selected_save_index -= 1;
+                }
+            }
+            "down" => {
+                if self.selected_save_index < self.save_list.len().saturating_sub(1) {
+                    self.selected_save_index += 1;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn handle_game_input(&mut self, input: &str) -> Result<()> {
         self.state = GameState::Processing;
 
         // 1. Construct Context
         let current_loc = self.world.locations.get(&self.world.current_location_id)
             .context("Current location not found in world map")?;
         
+        // Resolve items and actors names for context
+        let visible_items: Vec<String> = current_loc.items.iter()
+            .filter_map(|id| self.world.items.get(id).map(|i| i.name.clone()))
+            .collect();
+        
+        let visible_actors: Vec<String> = current_loc.actors.iter()
+            .filter_map(|id| self.world.actors.get(id).map(|a| a.name.clone()))
+            .collect();
+
+        let player_inventory: Vec<String> = self.world.player.inventory.iter()
+            .filter_map(|id| self.world.items.get(id).map(|i| i.name.clone()))
+            .collect();
+
+        let exits_str = current_loc.exits.iter()
+            .map(|(dir, _)| dir.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+
         let context_str = format!(
-            "Current Location: {}\nDescription: {}\nItems here: {:?}\nInventory: {:?}\n\nLast Narrative: {}\n\nUser Action: {}",
+            "Current Location: {}\nDescription: {}\nExits: {}\nItems here: {:?}\nActors here: {:?}\nPlayer Inventory: {:?}\nPlayer Money: {}\n\nLast Narrative: {}\n\nUser Action: {}",
             current_loc.name,
             current_loc.description,
-            current_loc.items,
-            self.world.global_inventory,
+            exits_str,
+            visible_items,
+            visible_actors,
+            player_inventory,
+            self.world.player.money,
             self.last_narrative,
             input
         );
@@ -66,11 +141,16 @@ You MUST return a JSON object representing the world update, followed by a narra
 The JSON structure is:
 {
   "narrative": "The story text describing what happens.",
-  "new_location": null, // Or a Location object if a NEW location is created
-  "updated_location": null, // Or a Location object if the CURRENT location changes
-  "inventory_add": [], // List of Item objects to add to inventory
-  "inventory_remove": [], // List of Item IDs to remove from inventory
-  "move_to_location_id": null // String ID if the user moves to a DIFFERENT existing location
+  "actions": [
+    { "type": "MoveTo", "payload": "location_id" },
+    { "type": "CreateLocation", "payload": { ...Location object... } },
+    { "type": "UpdateLocation", "payload": { ...Location object... } },
+    { "type": "AddItemToInventory", "payload": "item_id" },
+    { "type": "RemoveItemFromInventory", "payload": "item_id" },
+    { "type": "CreateItem", "payload": { ...Item object... } },
+    { "type": "AddItemToLocation", "payload": { "location_id": "...", "item_id": "..." } },
+    { "type": "RemoveItemFromLocation", "payload": { "location_id": "...", "item_id": "..." } }
+  ]
 }
 
 Location object:
@@ -78,9 +158,11 @@ Location object:
   "id": "unique_id",
   "name": "Name",
   "description": "Description",
-  "items": [],
+  "items": [], // List of Item IDs
+  "actors": [], // List of Actor IDs
+  "exits": { "north": "loc_id" }, // Map of direction to location ID (or null if blocked)
   "cached_image_path": null,
-  "image_prompt": "Visual description for image generation"
+  "image_prompt": "Visual description"
 }
 
 Item object:
@@ -90,17 +172,31 @@ Item object:
   "description": "Description"
 }
 
-If the user moves to a new area that doesn't exist, create it in `new_location` and set `move_to_location_id` to its ID.
-If the user stays, you can update the current location in `updated_location`.
-Ensure IDs are unique and consistent.
+Rules:
+1. If the user moves to an EXISTING exit, use `MoveTo`.
+2. If the user moves to a NEW direction, use `CreateLocation` for the new room, `UpdateLocation` to link the current room to it, and `MoveTo` to go there.
+3. Maintain spatial coherence.
+4. Use `AddItemToInventory` / `RemoveItemFromInventory` for picking up/dropping items.
+5. Use `CreateItem` before adding a NEW item to inventory or location.
 "#;
 
-        // 2. Call LLM
-        let update = self.llm_client.generate_update(system_prompt, &context_str).await?;
-
-        // 3. Apply Update
-        self.state = GameState::UpdatingWorld;
-        self.apply_update(update)?;
+        // 2. Call LLM with Error Handling
+        match self.llm_client.generate_update(system_prompt, &context_str).await {
+            Ok(update) => {
+                self.state = GameState::UpdatingWorld;
+                if let Err(e) = self.apply_update(update) {
+                    self.last_narrative = format!("Error applying update: {}", e);
+                }
+                // Auto-save
+                if let Some(path) = &self.current_save_path {
+                    let _ = self.save_manager.save_game(path, &self.world);
+                }
+            }
+            Err(e) => {
+                self.last_narrative = format!("The spirits are confused (LLM Error): {}", e);
+                // Don't crash, just let user try again
+            }
+        }
 
         self.state = GameState::WaitingForInput;
         Ok(())
@@ -109,34 +205,46 @@ Ensure IDs are unique and consistent.
     fn apply_update(&mut self, update: WorldUpdate) -> Result<()> {
         self.last_narrative = update.narrative.clone();
 
-        // Handle new location
-        if let Some(new_loc) = update.new_location {
-            self.world.locations.insert(new_loc.id.clone(), new_loc);
-        }
+        use crate::model::GameAction;
 
-        // Handle updated location
-        if let Some(updated_loc) = update.updated_location {
-            self.world.locations.insert(updated_loc.id.clone(), updated_loc);
-        }
-
-        // Handle inventory add
-        if let Some(items) = update.inventory_add {
-            self.world.global_inventory.extend(items);
-        }
-
-        // Handle inventory remove
-        if let Some(item_ids) = update.inventory_remove {
-            self.world.global_inventory.retain(|item| !item_ids.contains(&item.id));
-        }
-
-        // Handle movement
-        if let Some(loc_id) = update.move_to_location_id {
-            if self.world.locations.contains_key(&loc_id) {
-                self.world.current_location_id = loc_id;
-            } else {
-                // Fallback or error if LLM hallucinates a non-existent ID without creating it
-                // For now, just log or ignore, maybe stay put.
-                eprintln!("Warning: LLM tried to move to non-existent location {}", loc_id);
+        for action in update.actions {
+            match action {
+                GameAction::CreateLocation(loc) => {
+                    self.world.locations.insert(loc.id.clone(), loc);
+                }
+                GameAction::UpdateLocation(loc) => {
+                    self.world.locations.insert(loc.id.clone(), loc);
+                }
+                GameAction::CreateItem(item) => {
+                    self.world.items.insert(item.id.clone(), item);
+                }
+                GameAction::AddItemToInventory(item_id) => {
+                    if !self.world.player.inventory.contains(&item_id) {
+                        self.world.player.inventory.push(item_id);
+                    }
+                }
+                GameAction::RemoveItemFromInventory(item_id) => {
+                    self.world.player.inventory.retain(|id| id != &item_id);
+                }
+                GameAction::MoveTo(loc_id) => {
+                    if self.world.locations.contains_key(&loc_id) {
+                        self.world.current_location_id = loc_id;
+                    } else {
+                        eprintln!("Warning: LLM tried to move to non-existent location {}", loc_id);
+                    }
+                }
+                GameAction::AddItemToLocation { location_id, item_id } => {
+                    if let Some(loc) = self.world.locations.get_mut(&location_id) {
+                        if !loc.items.contains(&item_id) {
+                            loc.items.push(item_id);
+                        }
+                    }
+                }
+                GameAction::RemoveItemFromLocation { location_id, item_id } => {
+                    if let Some(loc) = self.world.locations.get_mut(&location_id) {
+                        loc.items.retain(|id| id != &item_id);
+                    }
+                }
             }
         }
 

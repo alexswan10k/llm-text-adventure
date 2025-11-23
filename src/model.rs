@@ -5,8 +5,15 @@ use std::collections::HashMap;
 pub struct WorldState {
     pub current_location_id: String,
     pub locations: HashMap<String, Location>,
-    pub actors: Vec<Actor>,
-    pub global_inventory: Vec<Item>,
+    pub actors: HashMap<String, Actor>, // Changed to HashMap for easier lookup
+    pub items: HashMap<String, Item>,   // Global registry of all items
+    pub player: Player,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct Player {
+    pub inventory: Vec<String>, // List of Item IDs
+    pub money: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -14,7 +21,9 @@ pub struct Location {
     pub id: String,
     pub name: String,
     pub description: String,
-    pub items: Vec<Item>,
+    pub items: Vec<String>, // List of Item IDs currently here
+    pub actors: Vec<String>, // List of Actor IDs currently here
+    pub exits: HashMap<String, Option<String>>, // Direction -> Location ID (Option for explicit null/blocked)
     pub cached_image_path: Option<String>,
     pub image_prompt: String,
 }
@@ -25,6 +34,8 @@ pub struct Actor {
     pub name: String,
     pub description: String,
     pub current_location_id: String,
+    pub inventory: Vec<String>, // List of Item IDs
+    pub money: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -32,17 +43,29 @@ pub struct Item {
     pub id: String,
     pub name: String,
     pub description: String,
+    // potentially other properties like "is_carryable", "value", etc.
+}
+
+// Atomic actions the LLM can take
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(tag = "type", content = "payload")]
+pub enum GameAction {
+    CreateLocation(Location),
+    UpdateLocation(Location),
+    CreateItem(Item),
+    AddItemToInventory(String), // item_id
+    RemoveItemFromInventory(String), // item_id
+    MoveTo(String), // location_id
+    // Add more as needed, e.g., AddItemToLocation, RemoveItemFromLocation
+    AddItemToLocation { location_id: String, item_id: String },
+    RemoveItemFromLocation { location_id: String, item_id: String },
 }
 
 // The structure returned by the LLM
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct WorldUpdate {
     pub narrative: String,
-    pub new_location: Option<Location>, // If we moved to a new place or it changed significantly
-    pub updated_location: Option<Location>, // Updates to current location
-    pub inventory_add: Option<Vec<Item>>,
-    pub inventory_remove: Option<Vec<String>>, // Item IDs
-    pub move_to_location_id: Option<String>,
+    pub actions: Vec<GameAction>,
 }
 
 impl WorldState {
@@ -50,8 +73,9 @@ impl WorldState {
         Self {
             current_location_id: "start".to_string(),
             locations: HashMap::new(),
-            actors: Vec::new(),
-            global_inventory: Vec::new(),
+            actors: HashMap::new(),
+            items: HashMap::new(),
+            player: Player::default(),
         }
     }
 }

@@ -1,0 +1,62 @@
+{
+  "current_location_id": "forest_clearing",
+  "locations": {
+    "start": {
+      "id": "start",
+      "name": "The Beginning",
+      "description": "You stand in a void of potential. Anything can happen here.",
+      "items": [],
+      "actors": [],
+      "exits": {},
+      "cached_image_path": null,
+      "image_prompt": "A swirling void of colors and shapes, representing potential."
+    },
+    "forest_clearing": {
+      "id": "forest_clearing",
+      "name": "Forest Clearing",
+      "description": "A small clearing surrounded by ancient trees. The air is thick with the scent of pine and earth. A narrow path winds deeper into the woods, disappearing around a bend where shadows seem to dance.",
+      "items": [
+        "stone"
+      ],
+      "actors": [],
+      "exits": {
+        "back": "The Beginning",
+        "north": "forest_path"
+      },
+      "cached_image_path": null,
+      "image_prompt": "A peaceful forest clearing with ancient trees surrounding a small open area, sunlight filtering through the canopy"
+    },
+    "The Beginning": {
+      "id": "The Beginning",
+      "name": "The Beginning",
+      "description": "You stand in a void of potential. Anything can happen here.",
+      "items": [],
+      "actors": [],
+      "exits": {},
+      "cached_image_path": null,
+      "image_prompt": "A vast empty void with swirling particles and floating possibilities"
+    }
+  },
+  "actors": {},
+  "items": {
+    "stone": {
+      "id": "stone",
+      "name": "Smooth Stone",
+      "description": "A small, perfectly round stone that feels warm to the touch. It seems to pulse with a faint inner light."
+    },
+    "stick_001": {
+      "id": "stick_001",
+      "name": "Mystical Branch",
+      "description": "A slender, polished branch that seems to shimmer with otherworldly energy. It hums softly and changes color between silver and gold."
+    },
+    "symbol_001": {
+      "id": "symbol_001",
+      "name": "Mystic Symbol",
+      "description": "A glowing symbol that seems to pulse with otherworldly energy"
+    }
+  },
+  "player": {
+    "inventory": [],
+    "money": 0
+  }
+}
