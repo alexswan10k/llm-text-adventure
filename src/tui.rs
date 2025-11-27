@@ -78,10 +78,16 @@ game.log(&format!("Enter pressed: '{}' (len: {}) state: {:?}", input, input.len(
                                     if let Some(loc) = game.world.locations.get(&current_id) {
                                         if let Some(next_option) = loc.exits.get("north") {
                                             if let Some(next_id) = next_option {
-                                                game.world.current_location_id = next_id.clone();
-                                                let next_name = game.world.locations.get(&game.world.current_location_id).map_or_else(|| "unknown place".to_string(), |l| l.name.clone());
-                                                game.last_narrative = format!("You go north to {}.", next_name);
-                                                game.log("Quick move north");
+                                                if game.world.locations.contains_key(next_id) {
+                                                    game.world.current_location_id = next_id.clone();
+                                                    let next_name = game.world.locations.get(&game.world.current_location_id).map_or_else(|| "unknown place".to_string(), |l| l.name.clone());
+                                                    game.last_narrative = format!("You go north to {}.", next_name);
+                                                    game.log("Quick move north");
+                                                } else {
+                                                    // Location doesn't exist, generate it
+                                                    game.process_input("go north").await?;
+                                                    game.log("Generated new location for north");
+                                                }
                                             } else {
                                                 game.last_narrative = "Path north is blocked.".to_string();
                                                 game.log("North exit blocked");
@@ -101,10 +107,16 @@ game.log(&format!("Enter pressed: '{}' (len: {}) state: {:?}", input, input.len(
                                     if let Some(loc) = game.world.locations.get(&current_id) {
                                         if let Some(next_option) = loc.exits.get("south") {
                                             if let Some(next_id) = next_option {
-                                                game.world.current_location_id = next_id.clone();
-                                                let next_name = game.world.locations.get(&game.world.current_location_id).map_or_else(|| "unknown place".to_string(), |l| l.name.clone());
-                                                game.last_narrative = format!("You go south to {}.", next_name);
-                                                game.log("Quick move south");
+                                                if game.world.locations.contains_key(next_id) {
+                                                    game.world.current_location_id = next_id.clone();
+                                                    let next_name = game.world.locations.get(&game.world.current_location_id).map_or_else(|| "unknown place".to_string(), |l| l.name.clone());
+                                                    game.last_narrative = format!("You go south to {}.", next_name);
+                                                    game.log("Quick move south");
+                                                } else {
+                                                    // Location doesn't exist, generate it
+                                                    game.process_input("go south").await?;
+                                                    game.log("Generated new location for south");
+                                                }
                                             } else {
                                                 game.last_narrative = "Path south is blocked.".to_string();
                                                 game.log("South exit blocked");
@@ -121,10 +133,16 @@ game.log(&format!("Enter pressed: '{}' (len: {}) state: {:?}", input, input.len(
                                 if let Some(loc) = game.world.locations.get(&current_id) {
                                     if let Some(next_option) = loc.exits.get("west") {
                                         if let Some(next_id) = next_option {
-                                            game.world.current_location_id = next_id.clone();
-                                            let next_name = game.world.locations.get(&game.world.current_location_id).map_or_else(|| "unknown place".to_string(), |l| l.name.clone());
-                                            game.last_narrative = format!("You go west to {}.", next_name);
-                                            game.log("Quick move west");
+                                            if game.world.locations.contains_key(next_id) {
+                                                game.world.current_location_id = next_id.clone();
+                                                let next_name = game.world.locations.get(&game.world.current_location_id).map_or_else(|| "unknown place".to_string(), |l| l.name.clone());
+                                                game.last_narrative = format!("You go west to {}.", next_name);
+                                                game.log("Quick move west");
+                                            } else {
+                                                // Location doesn't exist, generate it
+                                                game.process_input("go west").await?;
+                                                game.log("Generated new location for west");
+                                            }
                                         } else {
                                             game.last_narrative = "Path west is blocked.".to_string();
                                             game.log("West exit blocked");
@@ -140,10 +158,16 @@ game.log(&format!("Enter pressed: '{}' (len: {}) state: {:?}", input, input.len(
                                 if let Some(loc) = game.world.locations.get(&current_id) {
                                     if let Some(next_option) = loc.exits.get("east") {
                                         if let Some(next_id) = next_option {
-                                            game.world.current_location_id = next_id.clone();
-                                            let next_name = game.world.locations.get(&game.world.current_location_id).map_or_else(|| "unknown place".to_string(), |l| l.name.clone());
-                                            game.last_narrative = format!("You go east to {}.", next_name);
-                                            game.log("Quick move east");
+                                            if game.world.locations.contains_key(next_id) {
+                                                game.world.current_location_id = next_id.clone();
+                                                let next_name = game.world.locations.get(&game.world.current_location_id).map_or_else(|| "unknown place".to_string(), |l| l.name.clone());
+                                                game.last_narrative = format!("You go east to {}.", next_name);
+                                                game.log("Quick move east");
+                                            } else {
+                                                // Location doesn't exist, generate it
+                                                game.process_input("go east").await?;
+                                                game.log("Generated new location for east");
+                                            }
                                         } else {
                                             game.last_narrative = "Path east is blocked.".to_string();
                                             game.log("East exit blocked");
