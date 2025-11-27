@@ -65,7 +65,7 @@ pub enum GameAction {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct WorldUpdate {
     pub narrative: String,
-    pub actions: Vec<GameAction>,
+    pub actions: Vec<String>,
     pub suggested_actions: Vec<String>,
 }
 

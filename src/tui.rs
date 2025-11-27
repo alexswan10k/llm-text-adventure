@@ -54,6 +54,7 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
                                     }
                                 } else if !self.input_buffer.is_empty() {
                                     let input = self.input_buffer.clone();
+game.log(&format!("Enter pressed: '{}' (len: {}) state: {:?}", input, input.len(), game.state));
                                     self.input_buffer.clear();
                                     game.process_input(&input).await?;
                                 }
@@ -61,6 +62,7 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
                             KeyCode::Char(c) => {
                                 if game.state != GameState::SplashScreen {
                                     self.input_buffer.push(c);
+
                                 }
                             },
                             KeyCode::Backspace => {
@@ -85,8 +87,8 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
                                                 game.log("North exit blocked");
                                             }
                                         } else {
-                                            game.last_narrative = "No path north from here.".to_string();
-                                            game.log("No north exit");
+                                            game.process_input("go north").await?;
+                                            game.log("Queried model for go north");
                                         }
                                     }
                                 }
@@ -108,8 +110,8 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
                                                 game.log("South exit blocked");
                                             }
                                         } else {
-                                            game.last_narrative = "No path south from here.".to_string();
-                                            game.log("No south exit");
+                                            game.process_input("go south").await?;
+                                            game.log("Queried model for go south");
                                         }
                                     }
                                 }
@@ -128,8 +130,8 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
                                             game.log("West exit blocked");
                                         }
                                     } else {
-                                        game.last_narrative = "No path west from here.".to_string();
-                                        game.log("No west exit");
+                                        game.process_input("go west").await?;
+                                        game.log("Queried model for go west");
                                     }
                                 }
                             },
@@ -147,8 +149,8 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
                                             game.log("East exit blocked");
                                         }
                                     } else {
-                                        game.last_narrative = "No path east from here.".to_string();
-                                        game.log("No east exit");
+                                        game.process_input("go east").await?;
+                                        game.log("Queried model for go east");
                                     }
                                 }
                             },

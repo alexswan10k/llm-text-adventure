@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::sleep;
 use chrono::prelude::*;
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 pub enum GameState {
     SplashScreen,
     WaitingForInput,
@@ -158,35 +158,35 @@ impl Game {
         );
 
         let system_prompt = r#"
-You are the Dungeon Master for a text adventure game. 
+You are the Dungeon Master for a text adventure game.
 Your goal is to update the game world based on the user's action.
 You MUST return a JSON object representing the world update, followed by a narrative description.
 
 The JSON structure is:
 {
   "narrative": "The story text describing what happens.",
-  "actions": [ ... list of GameActions ... ],
+  "actions": [ ... list of action strings ... ],
   "suggested_actions": ["Option 1", "Option 2", "Option 3"] // 3-5 short, relevant follow-up actions for the user
 }
 
-Actions:
-- MoveTo(location_id)
-- CreateLocation(Location)
-- UpdateLocation(Location)
-- AddItemToInventory(item_id)
-- RemoveItemFromInventory(item_id)
-- CreateItem(Item)
-- AddItemToLocation(loc_id, item_id)
-- RemoveItemFromLocation(loc_id, item_id)
+Actions are strings in the format:
+- MoveTo("location_id")
+- CreateLocation({location JSON object})
+- UpdateLocation({location JSON object})
+- AddItemToInventory("item_id")
+- RemoveItemFromInventory("item_id")
+- CreateItem({item JSON object})
+- AddItemToLocation("loc_id", "item_id")
+- RemoveItemFromLocation("loc_id", "item_id")
 
 Location object:
 {
   "id": "unique_id",
   "name": "Name",
   "description": "Description",
-  "items": [], 
-  "actors": [], 
-  "exits": { "north": "loc_id" }, 
+  "items": [],
+  "actors": [],
+  "exits": { "north": "loc_id" },
   "cached_image_path": null,
   "image_prompt": "Visual description"
 }
@@ -260,47 +260,71 @@ Rules:
     fn apply_update(&mut self, update: WorldUpdate) -> Result<()> {
         self.last_narrative = update.narrative.clone();
 
-        use crate::model::GameAction;
+        for action_str in update.actions {
+            self.parse_and_apply_action(&action_str)?;
+        }
+        Ok(())
+    }
 
-        for action in update.actions {
-            match action {
-                GameAction::CreateLocation(loc) => {
-                    self.world.locations.insert(loc.id.clone(), loc);
-                }
-                GameAction::UpdateLocation(loc) => {
-                    self.world.locations.insert(loc.id.clone(), loc);
-                }
-                GameAction::CreateItem(item) => {
-                    self.world.items.insert(item.id.clone(), item);
-                }
-                GameAction::AddItemToInventory(item_id) => {
-                    if !self.world.player.inventory.contains(&item_id) {
-                        self.world.player.inventory.push(item_id);
-                    }
-                }
-                GameAction::RemoveItemFromInventory(item_id) => {
-                    self.world.player.inventory.retain(|id| id != &item_id);
-                }
-                GameAction::MoveTo(loc_id) => {
-                    if self.world.locations.contains_key(&loc_id) {
-                        self.world.current_location_id = loc_id;
-                    } else {
-                        eprintln!("Warning: LLM tried to move to non-existent location {}", loc_id);
-                    }
-                }
-                GameAction::AddItemToLocation { location_id, item_id } => {
-                    if let Some(loc) = self.world.locations.get_mut(&location_id) {
-                        if !loc.items.contains(&item_id) {
-                            loc.items.push(item_id);
-                        }
-                    }
-                }
-                GameAction::RemoveItemFromLocation { location_id, item_id } => {
-                    if let Some(loc) = self.world.locations.get_mut(&location_id) {
-                        loc.items.retain(|id| id != &item_id);
+    fn parse_and_apply_action(&mut self, action_str: &str) -> Result<()> {
+        let action_str = action_str.trim();
+        if action_str.starts_with("MoveTo(") && action_str.ends_with(")") {
+            let loc_id = &action_str[7..action_str.len()-1];
+            let loc_id = loc_id.trim_matches('"');
+            if self.world.locations.contains_key(loc_id) {
+                self.world.current_location_id = loc_id.to_string();
+            } else {
+                eprintln!("Warning: LLM tried to move to non-existent location {}", loc_id);
+            }
+        } else if action_str.starts_with("CreateLocation(") && action_str.ends_with(")") {
+            let json_str = &action_str[15..action_str.len()-1];
+            let loc: crate::model::Location = serde_json::from_str(json_str)
+                .context(format!("Failed to parse CreateLocation: {}", json_str))?;
+            self.world.locations.insert(loc.id.clone(), loc);
+        } else if action_str.starts_with("UpdateLocation(") && action_str.ends_with(")") {
+            let json_str = &action_str[15..action_str.len()-1];
+            let loc: crate::model::Location = serde_json::from_str(json_str)
+                .context(format!("Failed to parse UpdateLocation: {}", json_str))?;
+            self.world.locations.insert(loc.id.clone(), loc);
+        } else if action_str.starts_with("CreateItem(") && action_str.ends_with(")") {
+            let json_str = &action_str[11..action_str.len()-1];
+            let item: crate::model::Item = serde_json::from_str(json_str)
+                .context(format!("Failed to parse CreateItem: {}", json_str))?;
+            self.world.items.insert(item.id.clone(), item);
+        } else if action_str.starts_with("AddItemToInventory(") && action_str.ends_with(")") {
+            let item_id = &action_str[20..action_str.len()-1];
+            let item_id = item_id.trim_matches('"');
+            if !self.world.player.inventory.contains(&item_id.to_string()) {
+                self.world.player.inventory.push(item_id.to_string());
+            }
+        } else if action_str.starts_with("RemoveItemFromInventory(") && action_str.ends_with(")") {
+            let item_id = &action_str[24..action_str.len()-1];
+            let item_id = item_id.trim_matches('"');
+            self.world.player.inventory.retain(|id| id != item_id);
+        } else if action_str.starts_with("AddItemToLocation(") && action_str.ends_with(")") {
+            let params_str = &action_str[18..action_str.len()-1];
+            // Parse "loc_id, item_id"
+            if let Some(comma_pos) = params_str.find(',') {
+                let location_id = params_str[..comma_pos].trim().trim_matches('"');
+                let item_id = params_str[comma_pos+1..].trim().trim_matches('"');
+                if let Some(loc) = self.world.locations.get_mut(location_id) {
+                    if !loc.items.contains(&item_id.to_string()) {
+                        loc.items.push(item_id.to_string());
                     }
                 }
             }
+        } else if action_str.starts_with("RemoveItemFromLocation(") && action_str.ends_with(")") {
+            let params_str = &action_str[22..action_str.len()-1];
+            // Parse "loc_id, item_id"
+            if let Some(comma_pos) = params_str.find(',') {
+                let location_id = params_str[..comma_pos].trim().trim_matches('"');
+                let item_id = params_str[comma_pos+1..].trim().trim_matches('"');
+                if let Some(loc) = self.world.locations.get_mut(location_id) {
+                    loc.items.retain(|id| id != &item_id.to_string());
+                }
+            }
+        } else {
+            eprintln!("Unknown action: {}", action_str);
         }
         Ok(())
     }

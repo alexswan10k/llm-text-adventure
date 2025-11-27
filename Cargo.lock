@@ -1492,6 +1492,7 @@ dependencies = [
  "js-sys",
  "rand",
  "uuid-macro-internal",
+ "uuid-rng-internal",
  "wasm-bindgen",
 ]
 
@@ -1504,6 +1505,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "uuid-rng-internal"
+version = "1.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23426b4394875bbc29a3074f94e1b52cd0eed2c8410c21a6edbfb033daef0aa1"
+dependencies = [
+ "rand",
 ]
 
 [[package]]
