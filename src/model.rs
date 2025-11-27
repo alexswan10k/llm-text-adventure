@@ -26,6 +26,8 @@ pub struct Location {
     pub exits: HashMap<String, Option<String>>, // Direction -> Location ID (Option for explicit null/blocked)
     pub cached_image_path: Option<String>,
     pub image_prompt: String,
+    pub x: i32,
+    pub y: i32,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

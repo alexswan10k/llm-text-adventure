@@ -220,6 +220,44 @@ game.log(&format!("Enter pressed: '{}' (len: {}) state: {:?}", input, input.len(
         frame.render_stateful_widget(list, chunks[1], &mut state);
     }
 
+    fn render_map(game: &Game) -> String {
+        let mut min_x = i32::MAX;
+        let mut max_x = i32::MIN;
+        let mut min_y = i32::MAX;
+        let mut max_y = i32::MIN;
+
+        for loc in game.world.locations.values() {
+            min_x = min_x.min(loc.x);
+            max_x = max_x.max(loc.x);
+            min_y = min_y.min(loc.y);
+            max_y = max_y.max(loc.y);
+        }
+
+        if game.world.locations.is_empty() {
+            return "No locations".to_string();
+        }
+
+        let width = (max_x - min_x + 1) as usize;
+        let height = (max_y - min_y + 1) as usize;
+
+        let mut grid = vec![vec!['.'; width]; height];
+
+        for loc in game.world.locations.values() {
+            let gx = (loc.x - min_x) as usize;
+            let gy = (loc.y - min_y) as usize;
+            if gx < width && gy < height {
+                grid[gy][gx] = if loc.id == game.world.current_location_id { '@' } else { '#' };
+            }
+        }
+
+        let mut map_str = String::new();
+        for row in grid.iter().rev() { // y from max to min
+            map_str.push_str(&row.iter().collect::<String>());
+            map_str.push('\n');
+        }
+        map_str.trim_end().to_string()
+    }
+
     fn render_main_game(frame: &mut Frame, game: &Game, input_buffer: &str) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -266,15 +304,35 @@ game.log(&format!("Enter pressed: '{}' (len: {}) state: {:?}", input, input.len(
             top_chunks[1],
         );
 
+        // Debug and Map Area
+        let debug_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(50), // Map
+                Constraint::Percentage(50), // Debug Log
+            ])
+            .split(chunks[1]);
+
+        // Map Area
+        let map_block = Block::default().borders(Borders::ALL).title("Map");
+        let map_text = Self::render_map(game);
+        frame.render_widget(Paragraph::new(map_text).block(map_block), debug_chunks[0]);
+
         // Debug Log Area
         let debug_block = Block::default().borders(Borders::ALL).title("Debug Log");
         let debug_text = game.debug_log.iter().rev().take(8).rev().cloned().collect::<Vec<_>>().join("\n");
-        frame.render_widget(Paragraph::new(debug_text).block(debug_block), chunks[1]);
+        frame.render_widget(Paragraph::new(debug_text).block(debug_block), debug_chunks[1]);
 
         // Input Area
         let input_block = Block::default().borders(Borders::ALL).title("Input");
         let input_text = match game.state {
-            GameState::Processing | GameState::UpdatingWorld => "Thinking...".to_string(),
+            GameState::Processing | GameState::UpdatingWorld => {
+                if game.status_message.is_empty() {
+                    "Thinking...".to_string()
+                } else {
+                    game.status_message.clone()
+                }
+            },
             _ => input_buffer.to_string(),
         };
         frame.render_widget(Paragraph::new(input_text).block(input_block), chunks[2]);

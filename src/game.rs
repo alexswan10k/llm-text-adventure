@@ -27,6 +27,7 @@ pub struct Game {
     pub selected_save_index: usize,
     pub debug_log: Vec<String>,
     pub current_options: Vec<String>,
+    pub status_message: String,
 }
 
 impl Game {
@@ -45,6 +46,7 @@ impl Game {
             selected_save_index: 0,
             debug_log: vec!["Game initialized.".to_string()],
             current_options: Vec::new(),
+            status_message: "".to_string(),
         }
     }
 
@@ -88,6 +90,8 @@ impl Game {
                         exits: HashMap::new(),
                         cached_image_path: None,
                         image_prompt: "A swirling void of colors and shapes, representing potential.".to_string(),
+                        x: 0,
+                        y: 0,
                     };
                     self.world.locations.insert("start".to_string(), start_loc);
                 }
@@ -121,6 +125,7 @@ impl Game {
 
     async fn handle_game_input(&mut self, input: &str) -> Result<()> {
         self.state = GameState::Processing;
+        self.status_message = "Thinking...".to_string();
 
         // 1. Construct Context
         let current_loc = self.world.locations.get(&self.world.current_location_id)
@@ -188,7 +193,9 @@ Location object:
   "actors": [],
   "exits": { "north": "loc_id" },
   "cached_image_path": null,
-  "image_prompt": "Visual description"
+  "image_prompt": "Visual description",
+  "x": 0,
+  "y": 0
 }
 
 Item object:
@@ -201,7 +208,7 @@ Item object:
 Rules:
 1. If the user moves to an EXISTING exit, use `MoveTo`.
 2. If the user moves to a NEW direction, use `CreateLocation` for the new room, `UpdateLocation` to link the current room to it, and `MoveTo` to go there.
-3. Maintain spatial coherence.
+3. Maintain spatial coherence. Assign grid coordinates (x, y) relative to the current location: north increases y by 1, south decreases y by 1, east increases x by 1, west decreases x by 1.
 4. Use `AddItemToInventory` / `RemoveItemFromInventory` for picking up/dropping items.
 5. Use `CreateItem` before adding a NEW item to inventory or location.
 6. Provide `suggested_actions` that are relevant to the current situation (e.g., "go north", "take sword", "examine chest").
@@ -215,13 +222,15 @@ Rules:
 
         loop {
             attempts += 1;
-            self.log(&format!("Attempt {}/{} - Asking the spirits...", attempts, max_attempts));
+            self.status_message = format!("Attempt {}/{} - Asking the spirits...", attempts, max_attempts);
+            self.log(&self.status_message.clone());
             
             match self.llm_client.generate_update(system_prompt, &context_str).await {
                 Ok(update) => {
                     self.log(&format!("Received update: {} actions, {} suggestions.", update.actions.len(), update.suggested_actions.len()));
                     self.state = GameState::UpdatingWorld;
-                    
+                    self.status_message = "Processing response...".to_string();
+
                     // Update options
                     self.current_options = update.suggested_actions.clone();
 
@@ -241,11 +250,13 @@ Rules:
                     let err_msg = e.to_string();
                     let summary = if err_msg.len() > 50 { format!("{}...", &err_msg[..47]) } else { err_msg };
                     self.log(&format!("LLM Error (Attempt {}): {}", attempts, summary));
+                    self.status_message = format!("Error, retrying in 30s... ({}/{})", attempts, max_attempts);
                     self.log("Retrying in 30 seconds. Model may still be loading.");
                     sleep(Duration::from_secs(30)).await;
                     
                     if attempts >= max_attempts {
                         self.last_narrative = format!("The spirits are silent. (Failed after {} attempts)", max_attempts);
+                        self.status_message = "Failed.".to_string();
                         break;
                     }
                     // Optional: Add a small delay here if needed, but for now just retry
@@ -254,6 +265,7 @@ Rules:
         }
 
         self.state = GameState::WaitingForInput;
+        self.status_message = "".to_string();
         Ok(())
     }
 
