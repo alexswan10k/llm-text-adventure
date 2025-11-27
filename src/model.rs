@@ -66,6 +66,7 @@ pub enum GameAction {
 pub struct WorldUpdate {
     pub narrative: String,
     pub actions: Vec<GameAction>,
+    pub suggested_actions: Vec<String>,
 }
 
 impl WorldState {

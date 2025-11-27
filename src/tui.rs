@@ -57,30 +57,104 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
                                     self.input_buffer.clear();
                                     game.process_input(&input).await?;
                                 }
-                            }
+                            },
                             KeyCode::Char(c) => {
                                 if game.state != GameState::SplashScreen {
                                     self.input_buffer.push(c);
                                 }
-                            }
+                            },
                             KeyCode::Backspace => {
                                 if game.state != GameState::SplashScreen {
                                     self.input_buffer.pop();
                                 }
-                            }
+                            },
                             KeyCode::Up => {
                                 if game.state == GameState::SplashScreen {
-                                    game.process_input("up").await.unwrap();
+                                    game.process_input("up").await?;
+                                } else {
+                                    let current_id = game.world.current_location_id.clone();
+                                    if let Some(loc) = game.world.locations.get(&current_id) {
+                                        if let Some(next_option) = loc.exits.get("north") {
+                                            if let Some(next_id) = next_option {
+                                                game.world.current_location_id = next_id.clone();
+                                                let next_name = game.world.locations.get(&game.world.current_location_id).map_or_else(|| "unknown place".to_string(), |l| l.name.clone());
+                                                game.last_narrative = format!("You go north to {}.", next_name);
+                                                game.log("Quick move north");
+                                            } else {
+                                                game.last_narrative = "Path north is blocked.".to_string();
+                                                game.log("North exit blocked");
+                                            }
+                                        } else {
+                                            game.last_narrative = "No path north from here.".to_string();
+                                            game.log("No north exit");
+                                        }
+                                    }
                                 }
-                            }
+                            },
                             KeyCode::Down => {
                                 if game.state == GameState::SplashScreen {
-                                    game.process_input("down").await.unwrap();
+                                    game.process_input("down").await?;
+                                } else {
+                                    let current_id = game.world.current_location_id.clone();
+                                    if let Some(loc) = game.world.locations.get(&current_id) {
+                                        if let Some(next_option) = loc.exits.get("south") {
+                                            if let Some(next_id) = next_option {
+                                                game.world.current_location_id = next_id.clone();
+                                                let next_name = game.world.locations.get(&game.world.current_location_id).map_or_else(|| "unknown place".to_string(), |l| l.name.clone());
+                                                game.last_narrative = format!("You go south to {}.", next_name);
+                                                game.log("Quick move south");
+                                            } else {
+                                                game.last_narrative = "Path south is blocked.".to_string();
+                                                game.log("South exit blocked");
+                                            }
+                                        } else {
+                                            game.last_narrative = "No path south from here.".to_string();
+                                            game.log("No south exit");
+                                        }
+                                    }
                                 }
-                            }
+                            },
+                            KeyCode::Left => {
+                                let current_id = game.world.current_location_id.clone();
+                                if let Some(loc) = game.world.locations.get(&current_id) {
+                                    if let Some(next_option) = loc.exits.get("west") {
+                                        if let Some(next_id) = next_option {
+                                            game.world.current_location_id = next_id.clone();
+                                            let next_name = game.world.locations.get(&game.world.current_location_id).map_or_else(|| "unknown place".to_string(), |l| l.name.clone());
+                                            game.last_narrative = format!("You go west to {}.", next_name);
+                                            game.log("Quick move west");
+                                        } else {
+                                            game.last_narrative = "Path west is blocked.".to_string();
+                                            game.log("West exit blocked");
+                                        }
+                                    } else {
+                                        game.last_narrative = "No path west from here.".to_string();
+                                        game.log("No west exit");
+                                    }
+                                }
+                            },
+                            KeyCode::Right => {
+                                let current_id = game.world.current_location_id.clone();
+                                if let Some(loc) = game.world.locations.get(&current_id) {
+                                    if let Some(next_option) = loc.exits.get("east") {
+                                        if let Some(next_id) = next_option {
+                                            game.world.current_location_id = next_id.clone();
+                                            let next_name = game.world.locations.get(&game.world.current_location_id).map_or_else(|| "unknown place".to_string(), |l| l.name.clone());
+                                            game.last_narrative = format!("You go east to {}.", next_name);
+                                            game.log("Quick move east");
+                                        } else {
+                                            game.last_narrative = "Path east is blocked.".to_string();
+                                            game.log("East exit blocked");
+                                        }
+                                    } else {
+                                        game.last_narrative = "No path east from here.".to_string();
+                                        game.log("No east exit");
+                                    }
+                                }
+                            },
                             KeyCode::Esc => {
                                 return Ok(());
-                            }
+                            },
                             _ => {}
                         }
                     }
@@ -125,6 +199,7 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(1), // Main content
+                Constraint::Length(10), // Debug Log (New)
                 Constraint::Length(3), // Input bar
                 Constraint::Length(1), // Status bar
             ])
@@ -148,13 +223,27 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
 
         // Narrative Area
         let narrative_block = Block::default().borders(Borders::ALL).title("Narrative");
-        let narrative_text = &game.last_narrative;
+        let mut narrative_text = game.last_narrative.clone();
+        
+        // Append options
+        if !game.current_options.is_empty() {
+            narrative_text.push_str("\n\nSuggested Actions:\n");
+            for (i, option) in game.current_options.iter().enumerate() {
+                narrative_text.push_str(&format!("{}. {}\n", i + 1, option));
+            }
+        }
+
         frame.render_widget(
-            Paragraph::new(narrative_text.as_str())
+            Paragraph::new(narrative_text)
                 .block(narrative_block)
                 .wrap(Wrap { trim: true }),
             top_chunks[1],
         );
+
+        // Debug Log Area
+        let debug_block = Block::default().borders(Borders::ALL).title("Debug Log");
+        let debug_text = game.debug_log.iter().rev().take(8).rev().cloned().collect::<Vec<_>>().join("\n");
+        frame.render_widget(Paragraph::new(debug_text).block(debug_block), chunks[1]);
 
         // Input Area
         let input_block = Block::default().borders(Borders::ALL).title("Input");
@@ -162,7 +251,7 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
             GameState::Processing | GameState::UpdatingWorld => "Thinking...".to_string(),
             _ => input_buffer.to_string(),
         };
-        frame.render_widget(Paragraph::new(input_text).block(input_block), chunks[1]);
+        frame.render_widget(Paragraph::new(input_text).block(input_block), chunks[2]);
 
         // Status Bar
         let status_text = format!(
@@ -175,7 +264,7 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
             },
             game.world.player.money
         );
-        frame.render_widget(Paragraph::new(status_text).style(Style::default().bg(Color::Blue).fg(Color::White)), chunks[2]);
+        frame.render_widget(Paragraph::new(status_text).style(Style::default().bg(Color::Blue).fg(Color::White)), chunks[3]);
     }
 }
 

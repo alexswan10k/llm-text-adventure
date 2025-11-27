@@ -4,6 +4,9 @@ use crate::save::{SaveManager, SaveInfo};
 use anyhow::{Result, Context};
 use std::collections::HashMap;
 
+use std::time::Duration;
+use tokio::time::sleep;
+use chrono::prelude::*;
 #[derive(PartialEq)]
 pub enum GameState {
     SplashScreen,
@@ -22,6 +25,8 @@ pub struct Game {
     pub current_save_path: Option<String>,
     pub save_list: Vec<SaveInfo>,
     pub selected_save_index: usize,
+    pub debug_log: Vec<String>,
+    pub current_options: Vec<String>,
 }
 
 impl Game {
@@ -38,13 +43,32 @@ impl Game {
             current_save_path: None,
             save_list,
             selected_save_index: 0,
+            debug_log: vec!["Game initialized.".to_string()],
+            current_options: Vec::new(),
+        }
+    }
+
+    pub fn log(&mut self, message: &str) {
+        self.debug_log.push(format!("[{}] {}", Local::now().format("%H:%M:%S"), message));
+        if self.debug_log.len() > 100 {
+            self.debug_log.remove(0);
         }
     }
 
     pub async fn process_input(&mut self, input: &str) -> Result<()> {
         match self.state {
             GameState::SplashScreen => self.handle_splash_input(input).await,
-            GameState::WaitingForInput => self.handle_game_input(input).await,
+            GameState::WaitingForInput => {
+                // Check if input is a number selection
+                if let Ok(idx) = input.parse::<usize>() {
+                    if idx > 0 && idx <= self.current_options.len() {
+                        let selected_action = self.current_options[idx - 1].clone();
+                        self.log(&format!("User selected option {}: {}", idx, selected_action));
+                        return self.handle_game_input(&selected_action).await;
+                    }
+                }
+                self.handle_game_input(input).await
+            },
             _ => Ok(()),
         }
     }
@@ -86,7 +110,7 @@ impl Game {
                 }
             }
             "down" => {
-                if self.selected_save_index < self.save_list.len().saturating_sub(1) {
+                if self.selected_save_index < self.save_list.len() {
                     self.selected_save_index += 1;
                 }
             }
@@ -101,12 +125,12 @@ impl Game {
         // 1. Construct Context
         let current_loc = self.world.locations.get(&self.world.current_location_id)
             .context("Current location not found in world map")?;
-        
+
         // Resolve items and actors names for context
         let visible_items: Vec<String> = current_loc.items.iter()
             .filter_map(|id| self.world.items.get(id).map(|i| i.name.clone()))
             .collect();
-        
+
         let visible_actors: Vec<String> = current_loc.actors.iter()
             .filter_map(|id| self.world.actors.get(id).map(|a| a.name.clone()))
             .collect();
@@ -141,26 +165,28 @@ You MUST return a JSON object representing the world update, followed by a narra
 The JSON structure is:
 {
   "narrative": "The story text describing what happens.",
-  "actions": [
-    { "type": "MoveTo", "payload": "location_id" },
-    { "type": "CreateLocation", "payload": { ...Location object... } },
-    { "type": "UpdateLocation", "payload": { ...Location object... } },
-    { "type": "AddItemToInventory", "payload": "item_id" },
-    { "type": "RemoveItemFromInventory", "payload": "item_id" },
-    { "type": "CreateItem", "payload": { ...Item object... } },
-    { "type": "AddItemToLocation", "payload": { "location_id": "...", "item_id": "..." } },
-    { "type": "RemoveItemFromLocation", "payload": { "location_id": "...", "item_id": "..." } }
-  ]
+  "actions": [ ... list of GameActions ... ],
+  "suggested_actions": ["Option 1", "Option 2", "Option 3"] // 3-5 short, relevant follow-up actions for the user
 }
+
+Actions:
+- MoveTo(location_id)
+- CreateLocation(Location)
+- UpdateLocation(Location)
+- AddItemToInventory(item_id)
+- RemoveItemFromInventory(item_id)
+- CreateItem(Item)
+- AddItemToLocation(loc_id, item_id)
+- RemoveItemFromLocation(loc_id, item_id)
 
 Location object:
 {
   "id": "unique_id",
   "name": "Name",
   "description": "Description",
-  "items": [], // List of Item IDs
-  "actors": [], // List of Actor IDs
-  "exits": { "north": "loc_id" }, // Map of direction to location ID (or null if blocked)
+  "items": [], 
+  "actors": [], 
+  "exits": { "north": "loc_id" }, 
   "cached_image_path": null,
   "image_prompt": "Visual description"
 }
@@ -178,23 +204,52 @@ Rules:
 3. Maintain spatial coherence.
 4. Use `AddItemToInventory` / `RemoveItemFromInventory` for picking up/dropping items.
 5. Use `CreateItem` before adding a NEW item to inventory or location.
+6. Provide `suggested_actions` that are relevant to the current situation (e.g., "go north", "take sword", "examine chest").
 "#;
 
-        // 2. Call LLM with Error Handling
-        match self.llm_client.generate_update(system_prompt, &context_str).await {
-            Ok(update) => {
-                self.state = GameState::UpdatingWorld;
-                if let Err(e) = self.apply_update(update) {
-                    self.last_narrative = format!("Error applying update: {}", e);
+        self.log(&format!("Processing input: '{}'", input));
+
+        // 2. Call LLM with Retry Loop
+        let max_attempts = 20;
+        let mut attempts = 0;
+
+        loop {
+            attempts += 1;
+            self.log(&format!("Attempt {}/{} - Asking the spirits...", attempts, max_attempts));
+            
+            match self.llm_client.generate_update(system_prompt, &context_str).await {
+                Ok(update) => {
+                    self.log(&format!("Received update: {} actions, {} suggestions.", update.actions.len(), update.suggested_actions.len()));
+                    self.state = GameState::UpdatingWorld;
+                    
+                    // Update options
+                    self.current_options = update.suggested_actions.clone();
+
+                    if let Err(e) = self.apply_update(update) {
+                        let err_msg = e.to_string();
+                        let summary = if err_msg.len() > 50 { format!("{}...", &err_msg[..47]) } else { err_msg };
+                        self.last_narrative = format!("Error applying update: {}", summary);
+                        self.log(&format!("Error applying update: {}", summary));
+                    }
+                    // Auto-save
+                    if let Some(path) = &self.current_save_path {
+                        let _ = self.save_manager.save_game(path, &self.world);
+                    }
+                    break; // Success, exit loop
                 }
-                // Auto-save
-                if let Some(path) = &self.current_save_path {
-                    let _ = self.save_manager.save_game(path, &self.world);
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    let summary = if err_msg.len() > 50 { format!("{}...", &err_msg[..47]) } else { err_msg };
+                    self.log(&format!("LLM Error (Attempt {}): {}", attempts, summary));
+                    self.log("Retrying in 30 seconds. Model may still be loading.");
+                    sleep(Duration::from_secs(30)).await;
+                    
+                    if attempts >= max_attempts {
+                        self.last_narrative = format!("The spirits are silent. (Failed after {} attempts)", max_attempts);
+                        break;
+                    }
+                    // Optional: Add a small delay here if needed, but for now just retry
                 }
-            }
-            Err(e) => {
-                self.last_narrative = format!("The spirits are confused (LLM Error): {}", e);
-                // Don't crash, just let user try again
             }
         }
 
@@ -247,7 +302,6 @@ Rules:
                 }
             }
         }
-
         Ok(())
     }
 }

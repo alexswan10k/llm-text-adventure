@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use anyhow::{Result, Context};
 use crate::model::WorldUpdate;
 
+use std::time::Duration;
+
 #[derive(Clone)]
 pub struct LlmClient {
     pub base_url: String,
@@ -29,7 +31,11 @@ impl LlmClient {
         Self {
             base_url,
             model_name,
-            client: reqwest::Client::new(),
+            client: reqwest::ClientBuilder::new()
+                .timeout(Duration::from_secs(600))
+                .connect_timeout(Duration::from_secs(60))
+                .build()
+                .expect("Failed to build reqwest client"),
         }
     }
 

@@ -17,7 +17,7 @@ use std::io;
 async fn main() -> Result<()> {
     // Default configuration (can be overridden by env vars)
     let base_url = env::var("LLM_BASE_URL").unwrap_or_else(|_| "http://localhost:1234".to_string());
-    let model_name = env::var("LLM_MODEL_NAME").unwrap_or_else(|_| "local-model".to_string());
+    let model_name = env::var("LLM_MODEL_NAME").unwrap_or_else(|_| "qwen3-coder-30b-a3b-instruct".to_string());
 
     let llm_client = LlmClient::new(base_url, model_name);
     let mut game = Game::new(llm_client);
