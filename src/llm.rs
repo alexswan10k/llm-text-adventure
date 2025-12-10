@@ -32,8 +32,8 @@ impl LlmClient {
             base_url,
             model_name,
             client: reqwest::ClientBuilder::new()
-                .timeout(Duration::from_secs(600))
-                .connect_timeout(Duration::from_secs(60))
+                .timeout(Duration::from_secs(30))  // Reduced from 600 to 30 seconds
+                .connect_timeout(Duration::from_secs(10))  // Reduced from 60 to 10 seconds
                 .build()
                 .expect("Failed to build reqwest client"),
         }
@@ -51,11 +51,14 @@ impl LlmClient {
             stream: false,
         };
 
-        let response = self.client.post(&format!("{}/v1/chat/completions", self.base_url))
-            .json(&request)
-            .send()
-            .await
-            .context("Failed to send request to LLM")?;
+        let response = tokio::time::timeout(
+            Duration::from_secs(25),  // Slightly less than client timeout
+            self.client.post(&format!("{}/v1/chat/completions", self.base_url))
+                .json(&request)
+                .send()
+        ).await
+        .context("LLM request timed out after 25 seconds")?
+        .context("Failed to send request to LLM")?;
 
         let response_json: serde_json::Value = response.json().await
             .context("Failed to parse LLM response JSON")?;

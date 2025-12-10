@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 #[async_trait::async_trait]
 pub trait ImageCache {
-    async fn get_cached_path(&self, location_id: &str) -> Option<String>;
-    async fn save_image(&self, location_id: &str, data: &[u8]) -> Result<String>;
+    async fn get_cached_path(&self, pos: &(i32, i32)) -> Option<String>;
+    async fn save_image(&self, pos: &(i32, i32), data: &[u8]) -> Result<String>;
 }
 
 #[async_trait::async_trait]
@@ -23,14 +23,14 @@ impl<C: ImageCache, G: ImageGenerator> ImageManager<C, G> {
         Self { cache, generator }
     }
 
-    pub async fn get_image_for_location(&self, location: &Location) -> Result<String> {
-        if let Some(path) = self.cache.get_cached_path(&location.id).await {
+    pub async fn get_image_for_location(&self, pos: &(i32, i32), location: &Location) -> Result<String> {
+        if let Some(path) = self.cache.get_cached_path(pos).await {
             return Ok(path);
         }
 
         // Generate
         let data = self.generator.generate_image(&location.image_prompt).await?;
-        let path = self.cache.save_image(&location.id, &data).await?;
+        let path = self.cache.save_image(pos, &data).await?;
         
         Ok(path)
     }
@@ -64,8 +64,8 @@ impl FileSystemCache {
 #[cfg(not(target_arch = "wasm32"))]
 #[async_trait::async_trait]
 impl ImageCache for FileSystemCache {
-    async fn get_cached_path(&self, location_id: &str) -> Option<String> {
-        let path = self.base_dir.join(format!("{}.png", location_id));
+    async fn get_cached_path(&self, pos: &(i32, i32)) -> Option<String> {
+        let path = self.base_dir.join(format!("{}_{}.png", pos.0, pos.1));
         if path.exists() {
             Some(path.to_string_lossy().to_string())
         } else {
@@ -73,8 +73,8 @@ impl ImageCache for FileSystemCache {
         }
     }
 
-    async fn save_image(&self, location_id: &str, data: &[u8]) -> Result<String> {
-        let path = self.base_dir.join(format!("{}.png", location_id));
+    async fn save_image(&self, pos: &(i32, i32), data: &[u8]) -> Result<String> {
+        let path = self.base_dir.join(format!("{}_{}.png", pos.0, pos.1));
         tokio::fs::write(&path, data).await?;
         Ok(path.to_string_lossy().to_string())
     }
@@ -93,11 +93,11 @@ impl InMemoryCache {
 #[cfg(target_arch = "wasm32")]
 #[async_trait::async_trait]
 impl ImageCache for InMemoryCache {
-    async fn get_cached_path(&self, _location_id: &str) -> Option<String> {
+    async fn get_cached_path(&self, _pos: &(i32, i32)) -> Option<String> {
         None
     }
 
-    async fn save_image(&self, _location_id: &str, _data: &[u8]) -> Result<String> {
+    async fn save_image(&self, _pos: &(i32, i32), _data: &[u8]) -> Result<String> {
         // Create Blob URL
         Ok("blob:dummy".to_string())
     }

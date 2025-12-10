@@ -82,7 +82,6 @@ impl Game {
                 // Initialize default location if needed
                 if self.world.locations.is_empty() {
                     let start_loc = Location {
-                        id: "start".to_string(),
                         name: "The Beginning".to_string(),
                         description: "You stand in a void of potential. Anything can happen here.".to_string(),
                         items: vec![],
@@ -90,10 +89,9 @@ impl Game {
                         exits: HashMap::new(),
                         cached_image_path: None,
                         image_prompt: "A swirling void of colors and shapes, representing potential.".to_string(),
-                        x: 0,
-                        y: 0,
+                        visited: true,  // Starting location is visited
                     };
-                    self.world.locations.insert("start".to_string(), start_loc);
+                    self.world.locations.insert((0, 0), start_loc);
                 }
                 self.current_save_path = Some(self.save_manager.create_new_save("new_world", &self.world)?);
                 self.state = GameState::WaitingForInput;
@@ -128,7 +126,7 @@ impl Game {
         self.status_message = "Thinking...".to_string();
 
         // 1. Construct Context
-        let current_loc = self.world.locations.get(&self.world.current_location_id)
+        let current_loc = self.world.locations.get(&self.world.current_pos)
             .context("Current location not found in world map")?;
 
         // Resolve items and actors names for context
@@ -149,23 +147,41 @@ impl Game {
             .collect::<Vec<_>>()
             .join(", ");
 
+        // Add adjacent cell information for spatial context
+        let (x, y) = self.world.current_pos;
+        let adjacent_info = format!(
+            "Adjacent cells:\nNorth ({}, {}): {}\nSouth ({}, {}): {}\nEast ({}, {}): {}\nWest ({}, {}): {}",
+            x, y + 1,
+            self.world.locations.get(&(x, y + 1)).map_or("Unknown".to_string(), |l| format!("{} - {}", l.name, l.description)),
+            x, y - 1,
+            self.world.locations.get(&(x, y - 1)).map_or("Unknown".to_string(), |l| format!("{} - {}", l.name, l.description)),
+            x + 1, y,
+            self.world.locations.get(&(x + 1, y)).map_or("Unknown".to_string(), |l| format!("{} - {}", l.name, l.description)),
+            x - 1, y,
+            self.world.locations.get(&(x - 1, y)).map_or("Unknown".to_string(), |l| format!("{} - {}", l.name, l.description))
+        );
+
         let context_str = format!(
-            "Current Location: {}\nDescription: {}\nExits: {}\nItems here: {:?}\nActors here: {:?}\nPlayer Inventory: {:?}\nPlayer Money: {}\n\nLast Narrative: {}\n\nUser Action: {}",
+            "Current Location: {} ({}, {})\nDescription: {}\nExits: {}\nItems here: {:?}\nActors here: {:?}\nPlayer Inventory: {:?}\nPlayer Money: {}\n\n{}\n\nLast Narrative: {}\n\nUser Action: {}",
             current_loc.name,
+            x, y,
             current_loc.description,
             exits_str,
             visible_items,
             visible_actors,
             player_inventory,
             self.world.player.money,
+            adjacent_info,
             self.last_narrative,
             input
         );
 
         let system_prompt = r#"
-You are the Dungeon Master for a text adventure game.
+You are Dungeon Master for a text adventure game.
 Your goal is to update the game world based on the user's action.
 You MUST return a JSON object representing the world update, followed by a narrative description.
+
+IMPORTANT: You can and should use MULTIPLE actions to accomplish complex tasks. For example, to create a new room and move there: ["CreateLocation(x, y, {...})", "MoveTo(x, y)"]
 
 The JSON structure is:
 {
@@ -175,27 +191,25 @@ The JSON structure is:
 }
 
 Actions are strings in the format:
-- MoveTo("location_id")
-- CreateLocation({location JSON object})
-- UpdateLocation({location JSON object})
+- MoveTo(x, y)
+- CreateLocation(x, y, {location JSON object})
+- UpdateLocation(x, y, {location JSON object})
 - AddItemToInventory("item_id")
 - RemoveItemFromInventory("item_id")
 - CreateItem({item JSON object})
-- AddItemToLocation("loc_id", "item_id")
-- RemoveItemFromLocation("loc_id", "item_id")
+- AddItemToLocation(x, y, "item_id")
+- RemoveItemFromLocation(x, y, "item_id")
 
 Location object:
 {
-  "id": "unique_id",
   "name": "Name",
   "description": "Description",
   "items": [],
   "actors": [],
-  "exits": { "north": "loc_id" },
+  "exits": { "north": [x, y] or null },
   "cached_image_path": null,
   "image_prompt": "Visual description",
-  "x": 0,
-  "y": 0
+  "visited": true/false
 }
 
 Item object:
@@ -206,12 +220,14 @@ Item object:
 }
 
 Rules:
-1. If the user moves to an EXISTING exit, use `MoveTo`.
-2. If the user moves to a NEW direction, use `CreateLocation` for the new room, `UpdateLocation` to link the current room to it, and `MoveTo` to go there.
-3. Maintain spatial coherence. Assign grid coordinates (x, y) relative to the current location: north increases y by 1, south decreases y by 1, east increases x by 1, west decreases x by 1.
-4. Use `AddItemToInventory` / `RemoveItemFromInventory` for picking up/dropping items.
-5. Use `CreateItem` before adding a NEW item to inventory or location.
-6. Provide `suggested_actions` that are relevant to the current situation (e.g., "go north", "take sword", "examine chest").
+1. Use grid coordinates: north +y, south -y, east +x, west -x.
+2. ONLY CreateLocation(x,y,...) if NO location exists at (x,y).
+3. For movement: If target (x,y) exists, use MoveTo(x,y). Else CreateLocation first.
+4. Assign exits with exact coords: e.g., "north": [x, y+1] or null for blocked.
+5. Maintain spatial coherence: no teleporting, adjacent only unless specified.
+6. Use `AddItemToInventory` / `RemoveItemFromInventory` for picking up/dropping items.
+7. Use `CreateItem` before adding a NEW item to inventory or location.
+8. Provide `suggested_actions` that are relevant to the current situation (e.g., "go north", "take sword", "examine chest").
 "#;
 
         self.log(&format!("Processing input: '{}'", input));
@@ -272,32 +288,99 @@ Rules:
     fn apply_update(&mut self, update: WorldUpdate) -> Result<()> {
         self.last_narrative = update.narrative.clone();
 
-        for action_str in update.actions {
-            self.parse_and_apply_action(&action_str)?;
+        // First pass: Create all locations
+        for action_str in &update.actions {
+            let action_str = action_str.trim();
+            if action_str.starts_with("CreateLocation(") {
+                self.parse_and_apply_action(action_str)?;
+            }
+        }
+
+        // Second pass: Handle all other actions (MoveTo, items, etc.)
+        for action_str in &update.actions {
+            let action_str = action_str.trim();
+            if !action_str.starts_with("CreateLocation(") {
+                self.parse_and_apply_action(action_str)?;
+            }
         }
         Ok(())
     }
 
     fn parse_and_apply_action(&mut self, action_str: &str) -> Result<()> {
         let action_str = action_str.trim();
-        if action_str.starts_with("MoveTo(") && action_str.ends_with(")") {
-            let loc_id = &action_str[7..action_str.len()-1];
-            let loc_id = loc_id.trim_matches('"');
-            if self.world.locations.contains_key(loc_id) {
-                self.world.current_location_id = loc_id.to_string();
-            } else {
-                eprintln!("Warning: LLM tried to move to non-existent location {}", loc_id);
+        
+        if action_str.starts_with("MoveTo(") {
+            // Parse MoveTo(x, y) - handle various formats
+            let coords_str = action_str.strip_prefix("MoveTo(")
+                .and_then(|s| s.strip_suffix(')'))
+                .unwrap_or("");
+            
+            if let Some((x_str, y_str)) = coords_str.split_once(',') {
+                let x: i32 = x_str.trim().parse().context("Invalid x coordinate")?;
+                let y: i32 = y_str.trim().parse().context("Invalid y coordinate")?;
+                let pos = (x, y);
+                
+                if self.world.locations.contains_key(&pos) {
+                    self.world.current_pos = pos;
+                    if let Some(loc) = self.world.locations.get_mut(&pos) {
+                        loc.visited = true;
+                    }
+                } else {
+                    // Try to create a default location instead of failing
+                    self.log(&format!("Creating default location at {:?} for MoveTo", pos));
+                    let default_loc = crate::model::Location {
+                        name: format!("Location ({}, {})", x, y),
+                        description: "A mysterious place that appeared suddenly.".to_string(),
+                        items: vec![],
+                        actors: vec![],
+                        exits: HashMap::new(),
+                        cached_image_path: None,
+                        image_prompt: "A mysterious location with undefined characteristics.".to_string(),
+                        visited: true,
+                    };
+                    self.world.locations.insert(pos, default_loc);
+                    self.world.current_pos = pos;
+                }
             }
-        } else if action_str.starts_with("CreateLocation(") && action_str.ends_with(")") {
-            let json_str = &action_str[15..action_str.len()-1];
-            let loc: crate::model::Location = serde_json::from_str(json_str)
-                .context(format!("Failed to parse CreateLocation: {}", json_str))?;
-            self.world.locations.insert(loc.id.clone(), loc);
-        } else if action_str.starts_with("UpdateLocation(") && action_str.ends_with(")") {
-            let json_str = &action_str[15..action_str.len()-1];
-            let loc: crate::model::Location = serde_json::from_str(json_str)
-                .context(format!("Failed to parse UpdateLocation: {}", json_str))?;
-            self.world.locations.insert(loc.id.clone(), loc);
+        } else if action_str.starts_with("CreateLocation(") {
+            // Parse CreateLocation(x, y, {location JSON})
+            let after_paren = &action_str[14..]; // Remove "CreateLocation("
+            if let Some(comma_pos) = after_paren.find(',') {
+                let coords_part = &after_paren[..comma_pos];
+                let json_part = &after_paren[comma_pos+1..].trim();
+                
+                if let Some((x_str, y_str)) = coords_part.split_once(',') {
+                    let x: i32 = x_str.trim().parse().context("Invalid x coordinate")?;
+                    let y: i32 = y_str.trim().parse().context("Invalid y coordinate")?;
+                    let pos = (x, y);
+                    
+                    if !self.world.locations.contains_key(&pos) {
+                        let json_str = json_part.trim_end_matches(')');
+                        let mut loc: crate::model::Location = serde_json::from_str(json_str)
+                            .context(format!("Failed to parse CreateLocation: {}", json_str))?;
+                        loc.visited = true;  // Created for player
+                        self.world.locations.insert(pos, loc);
+                    }
+                }
+            }
+        } else if action_str.starts_with("UpdateLocation(") {
+            // Parse UpdateLocation(x, y, {location JSON})
+            let after_paren = &action_str[15..]; // Remove "UpdateLocation("
+            if let Some(comma_pos) = after_paren.find(',') {
+                let coords_part = &after_paren[..comma_pos];
+                let json_part = &after_paren[comma_pos+1..].trim();
+                
+                if let Some((x_str, y_str)) = coords_part.split_once(',') {
+                    let x: i32 = x_str.trim().parse().context("Invalid x coordinate")?;
+                    let y: i32 = y_str.trim().parse().context("Invalid y coordinate")?;
+                    let pos = (x, y);
+                    
+                    let json_str = json_part.trim_end_matches(')');
+                    let loc: crate::model::Location = serde_json::from_str(json_str)
+                        .context(format!("Failed to parse UpdateLocation: {}", json_str))?;
+                    self.world.locations.insert(pos, loc);
+                }
+            }
         } else if action_str.starts_with("CreateItem(") && action_str.ends_with(")") {
             let json_str = &action_str[11..action_str.len()-1];
             let item: crate::model::Item = serde_json::from_str(json_str)
@@ -313,26 +396,42 @@ Rules:
             let item_id = &action_str[24..action_str.len()-1];
             let item_id = item_id.trim_matches('"');
             self.world.player.inventory.retain(|id| id != item_id);
-        } else if action_str.starts_with("AddItemToLocation(") && action_str.ends_with(")") {
+        } else if action_str.starts_with("AddItemToLocation(") {
             let params_str = &action_str[18..action_str.len()-1];
-            // Parse "loc_id, item_id"
-            if let Some(comma_pos) = params_str.find(',') {
-                let location_id = params_str[..comma_pos].trim().trim_matches('"');
-                let item_id = params_str[comma_pos+1..].trim().trim_matches('"');
-                if let Some(loc) = self.world.locations.get_mut(location_id) {
-                    if !loc.items.contains(&item_id.to_string()) {
-                        loc.items.push(item_id.to_string());
+            // Parse "x, y, item_id"
+            if let Some(first_comma) = params_str.find(',') {
+                let coords_part = &params_str[..first_comma];
+                let rest = &params_str[first_comma+1..].trim();
+                
+                if let Some((x_str, y_str)) = coords_part.split_once(',') {
+                    let x: i32 = x_str.trim().parse().context("Invalid x coordinate")?;
+                    let y: i32 = y_str.trim().parse().context("Invalid y coordinate")?;
+                    let pos = (x, y);
+                    let item_id = rest.trim().trim_matches('"');
+                    
+                    if let Some(loc) = self.world.locations.get_mut(&pos) {
+                        if !loc.items.contains(&item_id.to_string()) {
+                            loc.items.push(item_id.to_string());
+                        }
                     }
                 }
             }
         } else if action_str.starts_with("RemoveItemFromLocation(") && action_str.ends_with(")") {
             let params_str = &action_str[22..action_str.len()-1];
-            // Parse "loc_id, item_id"
-            if let Some(comma_pos) = params_str.find(',') {
-                let location_id = params_str[..comma_pos].trim().trim_matches('"');
-                let item_id = params_str[comma_pos+1..].trim().trim_matches('"');
-                if let Some(loc) = self.world.locations.get_mut(location_id) {
-                    loc.items.retain(|id| id != &item_id.to_string());
+            // Parse "x, y, item_id"
+            if let Some(first_comma) = params_str.find(',') {
+                let coords_part = &params_str[..first_comma];
+                let rest = &params_str[first_comma+1..].trim();
+                
+                if let Some((x_str, y_str)) = coords_part.split_once(',') {
+                    let x: i32 = x_str.trim().parse().context("Invalid x coordinate")?;
+                    let y: i32 = y_str.trim().parse().context("Invalid y coordinate")?;
+                    let pos = (x, y);
+                    let item_id = rest.trim().trim_matches('"');
+                    
+                    if let Some(loc) = self.world.locations.get_mut(&pos) {
+                        loc.items.retain(|id| id != &item_id.to_string());
+                    }
                 }
             }
         } else {
