@@ -140,7 +140,12 @@ impl LlmClient {
         let cleaned_content = content.trim();
 
         if !self.is_complete_json(cleaned_content) {
-            return Err(anyhow::anyhow!("LLM response JSON appears incomplete. Content: {}...", &cleaned_content[..cleaned_content.len().min(200)]));
+            return Err(anyhow::anyhow!(
+                "LLM response JSON appears incomplete (mismatched braces/brackets or unclosed string).\n\
+                First 300 chars: {}\n\
+                This usually means the LLM response was truncated. Try reducing max_tokens or the prompt length.",
+                &cleaned_content[..cleaned_content.len().min(300)]
+            ));
         }
 
         let json_start = cleaned_content.find('{');
@@ -149,13 +154,41 @@ impl LlmClient {
         if let (Some(start), Some(end)) = (json_start, json_end) {
             let json_str = &cleaned_content[start..=end];
 
-            let mut loc: Location = serde_json::from_str(json_str)
-                .context(format!("Failed to parse Location from LLM content. JSON: {}", json_str))?;
-            loc.visited = false;
-            return Ok(loc);
-        }
+            match serde_json::from_str::<Location>(json_str) {
+                Ok(mut loc) => {
+                    loc.visited = false;
+                    Ok(loc)
+                }
+                Err(e) => {
+                    let mut missing_fields = Vec::new();
+                    let json_value: serde_json::Value = serde_json::from_str(json_str).unwrap_or(serde_json::Value::Null);
 
-        Err(anyhow::anyhow!("No JSON object found in LLM response. Content: {}", cleaned_content))
+                    if json_value.get("name").is_none() { missing_fields.push("name"); }
+                    if json_value.get("description").is_none() { missing_fields.push("description"); }
+                    if json_value.get("exits").is_none() { missing_fields.push("exits"); }
+                    if json_value.get("items").is_none() { missing_fields.push("items"); }
+                    if json_value.get("actors").is_none() { missing_fields.push("actors"); }
+
+                    let error_msg = if !missing_fields.is_empty() {
+                        format!(
+                            "Missing required fields: {}. JSON: {}",
+                            missing_fields.join(", "),
+                            json_str
+                        )
+                    } else {
+                        format!("Failed to parse Location JSON. Error: {}. JSON: {}", e, json_str)
+                    };
+
+                    Err(anyhow::anyhow!(error_msg))
+                }
+            }
+        } else {
+            Err(anyhow::anyhow!(
+                "No JSON object found in LLM response.\n\
+                First 300 chars: {}",
+                &cleaned_content[..cleaned_content.len().min(300)]
+            ))
+        }
     }
 
     pub fn is_complete_json(&self, content: &str) -> bool {
@@ -198,6 +231,12 @@ impl LlmClient {
             }
 
             i += 1;
+
+            if i > 0 && i % 1000 == 0 {
+                if brace_count < 0 || bracket_count < 0 {
+                    return false;
+                }
+            }
         }
 
         brace_count == 0 && bracket_count == 0 && !in_string

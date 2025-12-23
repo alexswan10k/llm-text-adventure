@@ -4,17 +4,6 @@ use crate::llm::LlmClient;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-/// All tools are batch tools - they execute without requiring LLM feedback
-/// The LLM sees the tool results and can generate narrative, but doesn't need
-/// to make additional tool calls based on the results.
-const BATCH_TOOLS: &[&str] = &[
-    "create_location", "create_item", "add_item_to_inventory",
-    "remove_item_from_inventory", "add_item_to_location", "remove_item_from_location",
-    "use_item", "equip_item", "unequip_item", "combine_items",
-    "break_item", "add_item_to_container", "remove_item_from_container",
-    "move_to",
-];
-
 /// No observation tools needed - all tools are batch executed
 const OBSERVATION_TOOLS: &[&str] = &[];
 
@@ -46,6 +35,7 @@ pub struct Agent {
     llm_client: LlmClient,
     world: WorldState,
     max_iterations: usize,
+    overall_timeout_seconds: u64,
     debug_log: Vec<String>,
 }
 
@@ -54,7 +44,8 @@ impl Agent {
         Self {
             llm_client,
             world,
-            max_iterations: 10,
+            max_iterations: 3,
+            overall_timeout_seconds: 60,
             debug_log: Vec::new(),
         }
     }
@@ -77,6 +68,9 @@ impl Agent {
     pub async fn process_action(&mut self, user_input: &str) -> Result<AgentResponse> {
         self.log(&format!("Processing user action: {}", user_input));
 
+        let start_time = std::time::Instant::now();
+        let overall_timeout = std::time::Duration::from_secs(self.overall_timeout_seconds);
+
         let mut messages = vec![
             self.build_system_message(),
             self.build_user_message(user_input),
@@ -88,6 +82,15 @@ impl Agent {
 
         loop {
             iteration += 1;
+
+            if start_time.elapsed() > overall_timeout {
+                self.log(&format!("Overall timeout reached ({}s)", self.overall_timeout_seconds));
+                return Ok(AgentResponse {
+                    narrative: format!("{} [Timeout: The game took too long to respond]", narrative),
+                    suggested_actions: self.extract_suggested_actions(&narrative),
+                });
+            }
+
             self.log(&format!("Agent iteration {}", iteration));
 
             if iteration > self.max_iterations {
@@ -641,7 +644,8 @@ mod tests {
         let llm_client = LlmClient::new("http://localhost:11434".to_string(), "test".to_string());
         let world = WorldState::new();
         let agent = Agent::new(llm_client, world);
-        assert_eq!(agent.max_iterations, 10);
+        assert_eq!(agent.max_iterations, 3);
+        assert_eq!(agent.overall_timeout_seconds, 60);
     }
 
     #[test]
@@ -673,9 +677,9 @@ mod tests {
     fn test_batch_vs_observation_tools() {
         assert!(BATCH_TOOLS.contains(&"create_location"));
         assert!(BATCH_TOOLS.contains(&"create_item"));
-        assert!(!BATCH_TOOLS.contains(&"move_to"));
+        assert!(BATCH_TOOLS.contains(&"move_to"));
 
-        assert!(OBSERVATION_TOOLS.contains(&"move_to"));
+        assert!(!OBSERVATION_TOOLS.contains(&"move_to"));
         assert!(!OBSERVATION_TOOLS.contains(&"create_item"));
     }
 }

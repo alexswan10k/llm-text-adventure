@@ -238,12 +238,12 @@ Do NOT include any narrative text or MoveTo actions. Just the location JSON."#,
         self.log(&format!("Current player position: {:?}", self.world.current_pos));
 
         let mut agent = Agent::new(self.llm_client.clone(), self.world.clone());
-        let max_attempts = 20;
+        let max_attempts = 3;
         let mut attempts = 0;
 
         loop {
             attempts += 1;
-            self.status_message = format!("Attempt {}/{} - Consulting the spirits...", attempts, max_attempts);
+            self.status_message = format!("Attempt {}/{} - Processing...", attempts, max_attempts);
             self.log(&self.status_message.clone());
 
             match agent.process_action(input).await {
@@ -275,7 +275,7 @@ Do NOT include any narrative text or MoveTo actions. Just the location JSON."#,
                         break;
                     }
 
-                    tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                 }
             }
         }

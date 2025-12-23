@@ -134,7 +134,8 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
                                             let _ = game.save_manager.save_game(path, &game.world);
                                         }
                                     } else {
-                                        game.generate_and_move_to(target_pos, "north").await?;
+                                        game.log("Cannot move north - area unexplored");
+                                        game.last_narrative = format!("The path north leads to unexplored territory. Type your action to explore.");
                                     }
                                 }
                             },
@@ -156,7 +157,8 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
                                             let _ = game.save_manager.save_game(path, &game.world);
                                         }
                                     } else {
-                                        game.generate_and_move_to(target_pos, "south").await?;
+                                        game.log("Cannot move south - area unexplored");
+                                        game.last_narrative = format!("The path south leads to unexplored territory. Type your action to explore.");
                                     }
                                 }
                             },
@@ -176,7 +178,8 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
                                             let _ = game.save_manager.save_game(path, &game.world);
                                         }
                                     } else {
-                                        game.generate_and_move_to(target_pos, "west").await?;
+                                        game.log("Cannot move west - area unexplored");
+                                        game.last_narrative = format!("The path west leads to unexplored territory. Type your action to explore.");
                                     }
                                 }
                             },
@@ -196,7 +199,8 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
                                             let _ = game.save_manager.save_game(path, &game.world);
                                         }
                                     } else {
-                                        game.generate_and_move_to(target_pos, "east").await?;
+                                        game.log("Cannot move east - area unexplored");
+                                        game.last_narrative = format!("The path east leads to unexplored territory. Type your action to explore.");
                                     }
                                 }
                             },
