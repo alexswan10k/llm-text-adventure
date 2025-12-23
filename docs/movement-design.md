@@ -53,46 +53,63 @@ This ensures reliable quick-moves, coherent grid expansion, rich LLM context, an
 
 ## 2. Movement Logic Flows
 
-### Arrow Key Movement in [`tui.rs`](src/tui.rs:99)
+### Arrow Key Movement in [`tui.rs`](src/tui.rs:119-202)
+
+**Up Arrow (North)**:
+- Calculates target_pos = (current_x, current_y + 1)
+- If location exists: quick move, update position, mark visited, auto-save
+- If location doesn't exist: call `generate_and_move_to(target_pos, "north")` for LLM generation
+
+**Down Arrow (South)**:
+- Calculates target_pos = (current_x, current_y - 1)
+- Same logic as north
+
+**Left Arrow (West)**:
+- Calculates target_pos = (current_x - 1, current_y)
+- Same logic as north
+
+**Right Arrow (East)**:
+- Calculates target_pos = (current_x + 1, current_y)
+- Same logic as north
+
 Pseudocode:
 ```
 fn handle_arrow_key(dir: Direction) -> Result<(), Error> {
-    let target_pos = match dir {
-        North => (current_pos.0, current_pos.1 + 1),
-        South => (current_pos.0, current_pos.1 - 1),
-        // etc.
-    };
+    let target_pos = calculate_target(dir);
     if let Some(target_loc) = world.locations.get(&target_pos) {
         // Quick move: explored/exists
         world.current_pos = target_pos;
         world.locations.get_mut(&target_pos).unwrap().visited = true;
         narrative = format!("You move {} to {}.\\n{}", dir, target_loc.name, target_loc.description);
-        save_world();  // Quick-save
-        render();
+        auto_save();  // Quick-save
     } else {
-        // LLM fallback
-        game.process_input(format!("go {}", dir.to_string()));
+        // LLM generation for new location
+        generate_and_move_to(target_pos, direction_str);
     }
     Ok(())
 }
 ```
 
-### LLM-Driven Movement
-- Triggered by text input or failed quick-move.
-- LLM outputs `actions: ["CreateLocation(x,y,{...})", "MoveTo(x,y)"]` or just `"MoveTo(x,y)"`.
-- Parser enforces: Create only if `!locations.contains_key((x,y))`; MoveTo only if exists.
+### LLM-Driven Movement in [`generate_and_move_to`](src/game.rs:81)
+- Triggered by arrow key when target location doesn't exist
+- Calls LLM with context about current location and direction
+- LLM returns new location JSON (name, description, items, actors, exits, image_prompt)
+- Parser validates and creates location, then moves player
+- Auto-saves after successful creation
+- Uses fallback location if LLM fails
 
 ## 3. LLM Context and Prompt Updates
 
-### Enhanced Context in [`handle_game_input`](src/game.rs:150)
-- Append adjacent existence info (simplified from full descriptions):
+### Enhanced Context in [`handle_game_input`](src/game.rs:233)
+- Append adjacent cell information with full descriptions:
   ```
   Adjacent cells:
-  North (x, y+1): Exists/Empty
-  South (x, y-1): Exists/Empty  
-  East/West similarly.
+  North at (x, y+1): Location Name - Description (or "UNKNOWN (not yet explored)")
+  South at (x, y-1): Location Name - Description (or "UNKNOWN (not yet explored)")
+  East at (x+1, y): Location Name - Description (or "UNKNOWN (not yet explored)")
+  West at (x-1, y): Location Name - Description (or "UNKNOWN (not yet explored)")
   ```
-- **Change**: Reduced from full name/description to simple existence status to avoid LLM confusion.
+- **Note**: The actual implementation includes full descriptions, not just existence status. This provides richer context for the LLM to generate coherent narratives.
 
 ### System Prompt Updates (lines 179-231 in [`game.rs`](src/game.rs))
 **Improved Prompt with Examples:**
@@ -108,16 +125,15 @@ fn handle_arrow_key(dir: Direction) -> Result<(), Error> {
 - Assign exits with exact coords: e.g., "north": [x, y+1] or null for blocked.
 - Maintain spatial coherence: adjacent movement only unless specified.
 
-## 4. LLM Action Parsing and Execution in [`parse_and_apply_action`](src/game.rs:309)
+## 4. LLM Action Parsing and Execution in [`parse_and_apply_action`](src/game.rs:422)
 
 **Key Implementation Changes:**
-- **Strict MoveTo validation**: `MoveTo(x,y)` now fails if location doesn't exist (no more default location creation)
-- **Error correction**: When actions fail, the system provides specific error messages and retries with corrected prompts
-- **Exit validation**: Validates that exits point to adjacent coordinates and checks for bidirectional consistency
-- **Three-pass processing**: 
+- **MoveTo with fallback**: `MoveTo(x,y)` creates a default location if it doesn't exist, then moves there
+- **Error logging**: Failed actions are logged to debug log but don't stop execution
+- **Exit validation**: Validates that exits point to adjacent coordinates and logs warnings for non-adjacent exits
+- **Two-pass processing**:
   1. Create all locations first
-  2. Handle movement and item actions  
-  3. Validate exit consistency
+  2. Handle all other actions (MoveTo, items, etc.)
 
 Pseudocode:
 ```
@@ -128,7 +144,14 @@ fn parse_and_apply_action(action: &str) -> Result<()> {
             world.current_pos = (x,y);
             mark_visited((x,y));
         } else {
-            return Err("Cannot MoveTo to non-existent location. Use CreateLocation first.");
+            // Create default location as fallback
+            let default_loc = Location {
+                name: format!("Location ({}, {})", x, y),
+                description: "A mysterious place that appeared suddenly.".to_string(),
+                // ... other defaults
+            };
+            world.locations.insert((x,y), default_loc);
+            world.current_pos = (x,y);
         }
     } else if action.starts_with("CreateLocation(") {
         let (x, y, loc_json) = parse_create(action);
@@ -137,32 +160,31 @@ fn parse_and_apply_action(action: &str) -> Result<()> {
             validate_exits(&loc); // Check adjacency and coordinate validity
             world.locations.insert((x,y), loc);
             mark_visited((x,y));
+        } else {
+            log("Location already exists, skipping");
         }
     }
     // ... other actions
 }
-
-fn validate_exit_consistency() {
-    // Check that exits are bidirectional where appropriate
-    // Log warnings for mismatched exits
-}
 ```
 
-- Auto-save after any Create/Update.
-- **Error recovery**: Failed actions trigger retry with specific error context.
+- Auto-save after any action in game loop.
+- **Error handling**: Errors are logged to debug log but don't cause retry; failures are displayed in narrative.
 
-## 5. Improved Map Rendering in [`render_map`](src/tui.rs:223)
+## 5. Improved Map Rendering in [`render_map`](src/tui.rs:291)
 
 ### Features
 - **Fog-of-war**: Only render locations where `visited == true` or adjacent to current_pos (reveal on approach).
-- **Paths/Walls**: 
-  - `@` = player.
-  - `#` = location.
-  - `- |` = open exits (draw lines between connected cells).
-  - `X` = blocked exit (if dir has None).
+- **Paths/Walls**:
+  - `@` = player
+  - `#` = visited location
+  - `?` = adjacent unvisited location
+  - `.` = unexplored space
+  - `|` = north/south path between locations
+  - `-` = east/west path between locations
 - **Grid bounds**: Min/max x/y of visible locations only.
-- **Colors** (Ratatui): Green #, Red X, Yellow -, Blue |, Cyan @.
-- **Y reversed** (north top).
+- **Y reversed**: Y coordinates reversed (north at top, south at bottom).
+- **No colors**: Current implementation uses plain ASCII characters without Ratatui colors.
 
 Pseudocode:
 ```
@@ -195,16 +217,31 @@ flowchart TD
 
 | File | Changes |
 |------|---------|
-| [`src/model.rs`](src/model.rs) | Update structs as above; derive Serialize/Deserialize for coords keys. |
-| [`src/game.rs`](src/game.rs) | Context building (+adjs); prompt rules; parse_action for coords; apply_update seq logic; save after create. |
-| [`src/tui.rs`](src/tui.rs) | Arrow logic (quick vs LLM); render_map (fog, paths, colors). |
-| [`src/llm.rs`](src/llm.rs) | Minor: JSON handling unchanged. |
-| Save JSON | Auto-migrate old saves (derive coords from exits/LLM). |
+| [`src/model.rs`](src/model.rs) | Update structs with coordinate-based HashMaps; derive Serialize/Deserialize for coords keys; add custom serializers for HashMap<(i32, i32), T>. |
+| [`src/game.rs`](src/game.rs) | Context building (full adjacent descriptions); prompt rules; parse_action for coords; apply_update seq logic; auto-save after each action; fallback location creation. |
+| [`src/tui.rs`](src/tui.rs) | Arrow key handlers (quick vs LLM generation); render_map with fog-of-war and path drawing; no colors used. |
+| [`src/llm.rs`](src/llm.rs) | JSON handling unchanged; uses standard OpenAI-compatible API. |
+| [`src/save.rs`](src/save.rs) | Auto-migrate old saves (derive coords from exits using BFS); handle coordinate serialization/deserialization. |
 
 ## 7. Migration and Testing
 
-- **Load old saves**: Scan locations, assign incremental coords based on exits graph (BFS from start).
-- **Testing**: Unit tests for parse_action; integration: sim movements/LLM mocks.
-- **Risks**: Coord collisions (low, prompt enforces); Ratatui color compat.
+### Save Migration ([`src/save.rs`](src/save.rs:76-303))
+- **Load old saves**: Scans old string-based locations, extracts x/y coordinates from old data
+- Uses BFS-like approach to assign coordinates based on existing x/y fields
+- Converts exits from string IDs to coordinate tuples
+- Converts actors' current_location_id to current_pos coordinates
+- Migrates items, player inventory, and player money
 
-This design fully meets requirements while minimizing disruptions.
+### Testing
+- **Manual testing**: Quick movement to adjacent explored cells works; LLM generation for new cells works; map renders correctly with fog-of-war
+- **No unit tests**: Currently no automated tests for parse_action or movement logic
+- **Risks**: Low - coordinate collisions prevented by HashMap structure; no Ratatui colors to worry about
+
+### Implementation Notes (Differences from Design)
+1. **MoveTo fallback**: Creates default location instead of failing (designed to fail)
+2. **Adjacent context**: Uses full descriptions instead of simple existence status
+3. **Map rendering**: Plain ASCII without colors (design called for colored output)
+4. **Error handling**: Logs to debug log instead of retrying with error context
+5. **Exit validation**: Logs warnings but doesn't enforce bidirectional consistency
+
+This design documents the coordinate-based movement system as implemented, with notes where implementation differs from original design decisions.
