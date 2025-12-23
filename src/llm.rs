@@ -47,7 +47,7 @@ impl LlmClient {
                 Message { role: "user".to_string(), content: user_input.to_string() },
             ],
             temperature: 0.7,
-            max_tokens: 8192,
+            max_tokens: 16384,
             stream: false,
         };
 
@@ -99,32 +99,107 @@ impl LlmClient {
         self.parse_location_json(content)
     }
 
-    fn parse_content(&self, content: &str) -> Result<WorldUpdate> {
-        let json_start = content.find('{');
-        let json_end = content.rfind('}');
+    pub async fn send_chat_request(&self, request: &crate::agent::LlmRequest) -> Result<serde_json::Value> {
+        let response = tokio::time::timeout(
+            Duration::from_secs(55),
+            self.client.post(&format!("{}/v1/chat/completions", self.base_url))
+                .json(request)
+                .send()
+        ).await
+        .context("LLM request timed out after 55 seconds")?
+        .context("Failed to send request to LLM")?;
+
+        let response_json: serde_json::Value = response.json().await
+            .context("Failed to parse LLM response JSON")?;
+
+        let message = response_json["choices"][0]["message"].clone();
+        Ok(message)
+    }
+
+    pub fn parse_content(&self, content: &str) -> Result<WorldUpdate> {
+        let cleaned_content = content.trim();
+
+        if !self.is_complete_json(cleaned_content) {
+            return Err(anyhow::anyhow!("LLM response JSON appears incomplete (mismatched braces/brackets or unclosed string). Content: {}...", &cleaned_content[..cleaned_content.len().min(200)]));
+        }
+
+        let json_start = cleaned_content.find('{');
+        let json_end = cleaned_content.rfind('}');
 
         if let (Some(start), Some(end)) = (json_start, json_end) {
-            let json_str = &content[start..=end];
+            let json_str = &cleaned_content[start..=end];
             let update: WorldUpdate = serde_json::from_str(json_str)
-                .context(format!("Failed to parse WorldUpdate from LLM content: {}", json_str))?;
+                .context(format!("Failed to parse WorldUpdate from LLM content. JSON: {}", json_str))?;
             return Ok(update);
         }
 
-        Err(anyhow::anyhow!("No JSON object found in LLM response"))
+        Err(anyhow::anyhow!("No JSON object found in LLM response. Content: {}", cleaned_content))
     }
 
-    fn parse_location_json(&self, content: &str) -> Result<Location> {
-        let json_start = content.find('{');
-        let json_end = content.rfind('}');
+    pub fn parse_location_json(&self, content: &str) -> Result<Location> {
+        let cleaned_content = content.trim();
+
+        if !self.is_complete_json(cleaned_content) {
+            return Err(anyhow::anyhow!("LLM response JSON appears incomplete. Content: {}...", &cleaned_content[..cleaned_content.len().min(200)]));
+        }
+
+        let json_start = cleaned_content.find('{');
+        let json_end = cleaned_content.rfind('}');
 
         if let (Some(start), Some(end)) = (json_start, json_end) {
-            let json_str = &content[start..=end];
+            let json_str = &cleaned_content[start..=end];
+
             let mut loc: Location = serde_json::from_str(json_str)
-                .context(format!("Failed to parse Location from LLM response: {}", json_str))?;
+                .context(format!("Failed to parse Location from LLM content. JSON: {}", json_str))?;
             loc.visited = false;
             return Ok(loc);
         }
 
-        Err(anyhow::anyhow!("No JSON object found in LLM response"))
+        Err(anyhow::anyhow!("No JSON object found in LLM response. Content: {}", cleaned_content))
+    }
+
+    pub fn is_complete_json(&self, content: &str) -> bool {
+        let mut brace_count = 0;
+        let mut bracket_count = 0;
+        let mut in_string = false;
+        let mut i = 0;
+        let chars: Vec<char> = content.chars().collect();
+
+        while i < chars.len() {
+            let ch = chars[i];
+
+            if ch == '"' {
+                let mut backslash_count = 0;
+                let mut j = i;
+                while j > 0 && chars[j - 1] == '\\' {
+                    backslash_count += 1;
+                    j -= 1;
+                }
+
+                if backslash_count % 2 == 0 {
+                    in_string = !in_string;
+                }
+            } else if !in_string {
+                if ch == '{' {
+                    brace_count += 1;
+                } else if ch == '}' {
+                    brace_count -= 1;
+                    if brace_count < 0 {
+                        return false;
+                    }
+                } else if ch == '[' {
+                    bracket_count += 1;
+                } else if ch == ']' {
+                    bracket_count -= 1;
+                    if bracket_count < 0 {
+                        return false;
+                    }
+                }
+            }
+
+            i += 1;
+        }
+
+        brace_count == 0 && bracket_count == 0 && !in_string
     }
 }

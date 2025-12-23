@@ -63,31 +63,83 @@ impl ActionParser {
 
     fn parse_create_item(&mut self, action_str: &str) -> Result<ParsedAction> {
         let json_str = &action_str[11..action_str.len()-1].trim();
-        self.log(&format!("CreateItem JSON string: '{}'", json_str));
-        
-        // Validate JSON structure before parsing
+        self.log(&format!("CreateItem JSON string ({} chars): '{}'", json_str.len(), json_str));
+
+        let max_json_length = 5000;
+        if json_str.len() > max_json_length {
+            return Err(anyhow!("CreateItem JSON too long ({} chars, max {}), likely includes narrative text", json_str.len(), max_json_length));
+        }
+
         if !json_str.starts_with('{') || !json_str.ends_with('}') {
             return Err(anyhow!("CreateItem JSON must be wrapped in braces: {}", json_str));
         }
-        
-        // Additional validation for common truncation patterns
+
+        if !self.is_complete_json(json_str) {
+            return Err(anyhow!("CreateItem JSON appears incomplete or malformed (mismatched braces): {}", json_str));
+        }
+
         if !json_str.contains("\"id\"") {
             return Err(anyhow!("CreateItem JSON missing required 'id' field: {}", json_str));
         }
-        
+
         if !json_str.contains("\"name\"") {
             return Err(anyhow!("CreateItem JSON missing required 'name' field: {}", json_str));
         }
-        
+
         if !json_str.contains("\"item_type\"") {
             return Err(anyhow!("CreateItem JSON missing required 'item_type' field: {}", json_str));
         }
 
+        if json_str.contains("\"description\"") && !(json_str.contains("\"description\":\"") || json_str.contains("\"description\": \"")) {
+            return Err(anyhow!("CreateItem JSON has malformed description field (missing opening quote): {}", json_str));
+        }
+
         let item: Item = serde_json::from_str(json_str)
             .map_err(|e| anyhow!("Failed to parse CreateItem JSON: {}. JSON was: {}", e, json_str))?;
-        
+
         self.log(&format!("Successfully parsed CreateItem: {}", item.id));
         Ok(ParsedAction::CreateItem(item))
+    }
+
+    fn is_complete_json(&self, json_str: &str) -> bool {
+        let mut brace_count = 0;
+        let mut bracket_count = 0;
+        let mut in_string = false;
+        let mut prev_char = '\0';
+
+        for (i, ch) in json_str.chars().enumerate() {
+            if ch == '"' && prev_char != '\\' {
+                in_string = !in_string;
+            }
+
+            if !in_string {
+                if ch == '{' {
+                    brace_count += 1;
+                } else if ch == '}' {
+                    brace_count -= 1;
+                    if brace_count < 0 {
+                        return false;
+                    }
+                } else if ch == '[' {
+                    bracket_count += 1;
+                } else if ch == ']' {
+                    bracket_count -= 1;
+                    if bracket_count < 0 {
+                        return false;
+                    }
+                }
+            }
+
+            prev_char = ch;
+
+            if i > 0 && i % 100 == 0 {
+                if brace_count < 0 || bracket_count < 0 {
+                    return false;
+                }
+            }
+        }
+
+        brace_count == 0 && bracket_count == 0 && !in_string
     }
 }
 
@@ -247,12 +299,59 @@ mod tests {
         let item = create_test_item();
         let json = serde_json::to_string(&item).unwrap();
         let action = format!("CreateItem({})", json);
-        
+
         parser.parse_action(&action).unwrap();
         let log = parser.get_debug_log();
-        
+
         assert!(!log.is_empty());
         assert!(log.iter().any(|entry| entry.contains("Parsing action")));
         assert!(log.iter().any(|entry| entry.contains("Successfully parsed CreateItem")));
+    }
+
+    #[test]
+    fn test_is_complete_json_valid() {
+        let parser = ActionParser::new();
+        assert!(parser.is_complete_json(r#"{"id":"test","name":"item"}"#));
+        assert!(parser.is_complete_json(r#"{"items":["a","b"]}"#));
+        assert!(parser.is_complete_json(r#"{"nested":{"inner":"value"}}"#));
+        assert!(parser.is_complete_json(r#"{"state":"Normal","properties":{}}"#));
+    }
+
+    #[test]
+    fn test_is_complete_json_incomplete_braces() {
+        let parser = ActionParser::new();
+        assert!(!parser.is_complete_json(r#"{"id":"test","name":"item""#));
+    }
+
+    #[test]
+    fn test_is_complete_json_incomplete_brackets() {
+        let parser = ActionParser::new();
+        assert!(!parser.is_complete_json(r#"{"items":["a","b"]"#));
+        assert!(!parser.is_complete_json(r#"{"items":["a","b"}}]"#));
+    }
+
+    #[test]
+    fn test_is_complete_json_unclosed_string() {
+        let parser = ActionParser::new();
+        assert!(!parser.is_complete_json(r#"{"id":"test,"name":"item"}"#));
+        assert!(!parser.is_complete_json(r#"{"description":"A long string"#));
+    }
+
+    #[test]
+    fn test_is_complete_json_with_escaped_quotes() {
+        let parser = ActionParser::new();
+        assert!(parser.is_complete_json(r#"{"desc":"He said \"hello\""}"#));
+    }
+
+    #[test]
+    fn test_parse_create_item_incomplete_json() {
+        let mut parser = ActionParser::new();
+        let incomplete_json = r#"{"id":"test","name":"Test Item","description":"A test item","item_type":"Tool""#;
+        let action = format!("CreateItem({})", incomplete_json);
+
+        let result = parser.parse_action(&action);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("incomplete") || err.contains("wrapped in braces"));
     }
 }
