@@ -36,6 +36,14 @@ cargo run
 
 ### Running WASM
 
+```bash
+./run-wasm.sh
+```
+
+This script installs `wasm-pack` if needed, builds the project, and starts a local server at `http://localhost:8000`.
+
+**Or manually**:
+
 1.  Install `wasm-pack`:
     ```bash
     cargo install wasm-pack
@@ -43,7 +51,7 @@ cargo run
 2.  Build and Serve:
     ```bash
     wasm-pack build --target web
-    python3 -m http.server
+    python3 -m http.server 8000
     ```
 3.  Open `http://localhost:8000`.
 
