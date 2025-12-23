@@ -1,4 +1,4 @@
-use crate::model::{WorldState, WorldUpdate, Location};
+use crate::model::{WorldState, WorldUpdate, Location, ItemState};
 use crate::llm::LlmClient;
 use crate::save::{SaveManager, SaveInfo};
 use anyhow::{Result, Context};
@@ -251,6 +251,26 @@ Do NOT include any narrative text or MoveTo actions. Just the location JSON."#,
             .filter_map(|id| self.world.items.get(id).map(|i| i.name.clone()))
             .collect();
 
+        // Item details with states
+        let item_context: String = self.world.items.iter()
+            .map(|(_id, item)| {
+                let state_desc = match &item.state {
+                    ItemState::Normal => "normal".to_string(),
+                    ItemState::Equipped => "equipped".to_string(),
+                    ItemState::Damaged { durability, max_durability } =>
+                        format!("damaged ({}/{})", durability, max_durability),
+                    ItemState::Consumed { charges, max_charges } =>
+                        format!("consumed ({} charges left of {})", charges, max_charges),
+                    ItemState::Locked { key_id } =>
+                        format!("locked (requires key: {:?})", key_id),
+                    ItemState::Open { contents } =>
+                        format!("open (contains: {:?})", contents),
+                };
+                format!("- {}: {} ({}) - state: {}", item.id, item.name, item.item_type, state_desc)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
         let exits_str = current_loc.exits.iter()
             .map(|(dir, _)| dir.clone())
             .collect::<Vec<_>>()
@@ -271,7 +291,7 @@ Do NOT include any narrative text or MoveTo actions. Just the location JSON."#,
         );
 
         let context_str = format!(
-            "Current Location: {} ({}, {})\nDescription: {}\nExits: {}\nItems here: {:?}\nActors here: {:?}\nPlayer Inventory: {:?}\nPlayer Money: {}\n\n{}\n\nLast Narrative: {}\n\nUser Action: {}",
+            "Current Location: {} ({}, {})\nDescription: {}\nExits: {}\nItems here: {:?}\nActors here: {:?}\nPlayer Inventory: {:?}\nPlayer Money: {}\n\n{}\n\nAll Items:\n{}\n\nItem Rules:\n- Max 20 items total in world\n- Items have durability, charges, container contents, etc.\n- CombineItems merges two items into one\n- UseItem activates consumables or tools\n\nLast Narrative: {}\n\nUser Action: {}",
             current_loc.name,
             x, y,
             current_loc.description,
@@ -281,6 +301,7 @@ Do NOT include any narrative text or MoveTo actions. Just the location JSON."#,
             player_inventory,
             self.world.player.money,
             adjacent_info,
+            item_context,
             self.last_narrative,
             input
         );
@@ -308,6 +329,14 @@ Actions are strings in the format:
 - CreateItem({item JSON object})
 - AddItemToLocation(x, y, "item_id")
 - RemoveItemFromLocation(x, y, "item_id")
+- UseItem("item_id")
+- EquipItem("item_id")
+- UnequipItem("item_id")
+- CombineItems({ "item1_id": "...", "item2_id": "...", "result_id": "..." })
+- SetItemState({ "item_id": "...", "state": {...} })
+- BreakItem("item_id")
+- AddItemToContainer({ "container_id": "...", "item_id": "..." })
+- RemoveItemFromContainer({ "container_id": "...", "item_id": "..." })
 
 Location object:
 {
@@ -325,7 +354,19 @@ Item object:
 {
   "id": "unique_id",
   "name": "Name",
-  "description": "Description"
+  "description": "Description",
+  "item_type": "Weapon" | "Armor" | "Consumable" | "Tool" | "Key" | "Container" | "QuestItem" | "Material",
+  "state": "Normal" | { "Equipped": {} } | { "Damaged": { "durability": 10, "max_durability": 20 } } | { "Consumed": { "charges": 3, "max_charges": 5 } } | { "Locked": { "key_id": "key123" } } | { "Open": { "contents": ["item_id1", "item_id2"] } },
+  "properties": {
+    "damage": 5,
+    "defense": 3,
+    "value": 10,
+    "weight": 2,
+    "carryable": true,
+    "usable": false,
+    "equip_slot": "weapon" | null,
+    "status_effects": []
+  }
 }
 
 Rules:
@@ -336,7 +377,11 @@ Rules:
 5. Maintain spatial coherence: no teleporting, adjacent only unless specified.
 6. Use `AddItemToInventory` / `RemoveItemFromInventory` for picking up/dropping items.
 7. Use `CreateItem` before adding a NEW item to inventory or location.
-8. Provide `suggested_actions` that are relevant to the current situation (e.g., "go north", "take sword", "examine chest").
+8. Max 20 items total in the world. Do not create more items than this limit.
+9. Use `UseItem` to activate consumables or tools - this reduces charges or removes the item.
+10. Use `EquipItem` and `UnequipItem` for items with equip_slot (weapons, armor).
+11. Use `CombineItems` to merge two items into one - removes source items from inventory/location and adds result.
+12. Provide `suggested_actions` that are relevant to the current situation (e.g., "go north", "take sword", "examine chest").
 "#;
 
         self.log(&format!("Processing input: '{}'", input));
@@ -573,16 +618,100 @@ Rules:
             if let Some(first_comma) = params_str.find(',') {
                 let coords_part = &params_str[..first_comma];
                 let rest = &params_str[first_comma+1..].trim();
-                
+
                 if let Some((x_str, y_str)) = coords_part.split_once(',') {
                     let x: i32 = x_str.trim().parse().context("Invalid x coordinate")?;
                     let y: i32 = y_str.trim().parse().context("Invalid y coordinate")?;
                     let pos = (x, y);
                     let item_id = rest.trim().trim_matches('"');
-                    
+
                     if let Some(loc) = self.world.locations.get_mut(&pos) {
                         loc.items.retain(|id| id != &item_id.to_string());
                     }
+                }
+            }
+        } else if action_str.starts_with("UseItem(") && action_str.ends_with(")") {
+            let item_id = action_str[8..action_str.len()-1].trim_matches('"').to_string();
+            if let Some(item) = self.world.items.get_mut(&item_id) {
+                if item.properties.usable {
+                    match &item.state {
+                        ItemState::Consumed { charges, max_charges } if *charges > 1 => {
+                            item.state = ItemState::Consumed { charges: charges - 1, max_charges: *max_charges };
+                        }
+                        ItemState::Consumed { .. } => {
+                            self.world.player.inventory.retain(|id| id != &item_id);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        } else if action_str.starts_with("EquipItem(") && action_str.ends_with(")") {
+            let item_id = action_str[10..action_str.len()-1].trim_matches('"').to_string();
+            if let Some(item) = self.world.items.get_mut(&item_id) {
+                if item.properties.equip_slot.is_some() {
+                    item.state = ItemState::Equipped;
+                }
+            }
+        } else if action_str.starts_with("UnequipItem(") && action_str.ends_with(")") {
+            let item_id = action_str[12..action_str.len()-1].trim_matches('"').to_string();
+            if let Some(item) = self.world.items.get_mut(&item_id) {
+                if matches!(item.state, ItemState::Equipped) {
+                    item.state = ItemState::Normal;
+                }
+            }
+        } else if action_str.starts_with("CombineItems(") {
+            let json_str = &action_str[13..action_str.len()-1];
+            let combine: serde_json::Value = serde_json::from_str(json_str)?;
+            let item1_id = combine["item1_id"].as_str().ok_or_else(|| anyhow::anyhow!("Missing item1_id"))?;
+            let item2_id = combine["item2_id"].as_str().ok_or_else(|| anyhow::anyhow!("Missing item2_id"))?;
+            let result_id = combine["result_id"].as_str().ok_or_else(|| anyhow::anyhow!("Missing result_id"))?;
+
+            self.world.player.inventory.retain(|id| id != item1_id && id != item2_id);
+            for loc in self.world.locations.values_mut() {
+                loc.items.retain(|id| id != item1_id && id != item2_id);
+            }
+
+            if let Some(result_item) = self.world.items.get(result_id) {
+                self.world.items.insert(result_id.to_string(), result_item.clone());
+                self.world.player.inventory.push(result_id.to_string());
+            }
+        } else if action_str.starts_with("SetItemState(") {
+            let json_str = &action_str[13..action_str.len()-1];
+            let state_obj: serde_json::Value = serde_json::from_str(json_str)?;
+            let item_id = state_obj["item_id"].as_str().ok_or_else(|| anyhow::anyhow!("Missing item_id"))?;
+
+            if let Some(item) = self.world.items.get_mut(item_id) {
+                if let Some(state_json) = state_obj.get("state") {
+                    item.state = serde_json::from_value(state_json.clone())?;
+                }
+            }
+        } else if action_str.starts_with("BreakItem(") && action_str.ends_with(")") {
+            let item_id = action_str[10..action_str.len()-1].trim_matches('"').to_string();
+            self.world.player.inventory.retain(|id| id != &item_id);
+            for loc in self.world.locations.values_mut() {
+                loc.items.retain(|id| id != &item_id);
+            }
+            self.world.items.remove(&item_id);
+        } else if action_str.starts_with("AddItemToContainer(") {
+            let json_str = &action_str[20..action_str.len()-1];
+            let container_obj: serde_json::Value = serde_json::from_str(json_str)?;
+            let container_id = container_obj["container_id"].as_str().ok_or_else(|| anyhow::anyhow!("Missing container_id"))?;
+            let item_id = container_obj["item_id"].as_str().ok_or_else(|| anyhow::anyhow!("Missing item_id"))?;
+
+            if let Some(container) = self.world.items.get_mut(container_id) {
+                if let ItemState::Open { contents } = &mut container.state {
+                    contents.push(item_id.to_string());
+                }
+            }
+        } else if action_str.starts_with("RemoveItemFromContainer(") {
+            let json_str = &action_str[24..action_str.len()-1];
+            let container_obj: serde_json::Value = serde_json::from_str(json_str)?;
+            let container_id = container_obj["container_id"].as_str().ok_or_else(|| anyhow::anyhow!("Missing container_id"))?;
+            let item_id = container_obj["item_id"].as_str().ok_or_else(|| anyhow::anyhow!("Missing item_id"))?;
+
+            if let Some(container) = self.world.items.get_mut(container_id) {
+                if let ItemState::Open { contents } = &mut container.state {
+                    contents.retain(|id| id != item_id);
                 }
             }
         } else {

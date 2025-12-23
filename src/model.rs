@@ -95,27 +95,102 @@ pub struct Actor {
     pub money: u32,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub enum ItemType {
+    Weapon,
+    Armor,
+    Consumable,
+    Tool,
+    Key,
+    Container,
+    QuestItem,
+    Material,
+}
+
+impl std::fmt::Display for ItemType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ItemType::Weapon => write!(f, "Weapon"),
+            ItemType::Armor => write!(f, "Armor"),
+            ItemType::Consumable => write!(f, "Consumable"),
+            ItemType::Tool => write!(f, "Tool"),
+            ItemType::Key => write!(f, "Key"),
+            ItemType::Container => write!(f, "Container"),
+            ItemType::QuestItem => write!(f, "QuestItem"),
+            ItemType::Material => write!(f, "Material"),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub enum ItemState {
+    Normal,
+    Equipped,
+    Damaged { durability: u32, max_durability: u32 },
+    Consumed { charges: u32, max_charges: u32 },
+    Locked { key_id: Option<String> },
+    Open { contents: Vec<String> },
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ItemProperties {
+    pub damage: Option<u32>,
+    pub defense: Option<u32>,
+    pub value: Option<u32>,
+    pub weight: Option<u32>,
+    pub carryable: bool,
+    pub usable: bool,
+    pub equip_slot: Option<String>,
+    pub status_effects: Vec<String>,
+}
+
+impl Default for ItemProperties {
+    fn default() -> Self {
+        Self {
+            damage: None,
+            defense: None,
+            value: None,
+            weight: None,
+            carryable: true,
+            usable: false,
+            equip_slot: None,
+            status_effects: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Item {
     pub id: String,
     pub name: String,
     pub description: String,
-    // potentially other properties like "is_carryable", "value", etc.
+    pub item_type: ItemType,
+    pub state: ItemState,
+    pub properties: ItemProperties,
 }
 
 // Atomic actions the LLM can take
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", content = "payload")]
 pub enum GameAction {
-    CreateLocation((i32, i32), Location),  // coord, location
-    UpdateLocation((i32, i32), Location),  // coord, location
+    CreateLocation((i32, i32), Location),
+    UpdateLocation((i32, i32), Location),
     CreateItem(Item),
-    AddItemToInventory(String), // item_id
-    RemoveItemFromInventory(String), // item_id
-    MoveTo((i32, i32)), // coord
-    // Add more as needed, e.g., AddItemToLocation, RemoveItemFromLocation
+    AddItemToInventory(String),
+    RemoveItemFromInventory(String),
+    MoveTo((i32, i32)),
     AddItemToLocation { pos: (i32, i32), item_id: String },
     RemoveItemFromLocation { pos: (i32, i32), item_id: String },
+
+    // Item Actions
+    UseItem(String),
+    EquipItem(String),
+    UnequipItem(String),
+    CombineItems { item1_id: String, item2_id: String, result_id: String },
+    SetItemState { item_id: String, state: ItemState },
+    BreakItem(String),
+    AddItemToContainer { container_id: String, item_id: String },
+    RemoveItemFromContainer { container_id: String, item_id: String },
 }
 
 // The structure returned by the LLM

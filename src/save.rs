@@ -264,6 +264,9 @@ impl SaveManager {
                         id: item_id.clone(),
                         name,
                         description,
+                        item_type: crate::model::ItemType::Material,
+                        state: crate::model::ItemState::Normal,
+                        properties: crate::model::ItemProperties::default(),
                     };
                     
                     new_items.insert(item_id.clone(), item);
