@@ -1,7 +1,7 @@
 {
   "current_pos": [
-    0,
-    0
+    -1,
+    2
   ],
   "locations": {
     "0,0": {
@@ -12,6 +12,36 @@
       "exits": {},
       "cached_image_path": null,
       "image_prompt": "A swirling void of colors and shapes, representing potential.",
+      "visited": true
+    },
+    "0,1": {
+      "name": "Location (0, 1)",
+      "description": "A mysterious place that appeared suddenly.",
+      "items": [],
+      "actors": [],
+      "exits": {},
+      "cached_image_path": null,
+      "image_prompt": "A mysterious location with undefined characteristics.",
+      "visited": true
+    },
+    "0,2": {
+      "name": "Location (0, 2)",
+      "description": "A mysterious place that appeared suddenly.",
+      "items": [],
+      "actors": [],
+      "exits": {},
+      "cached_image_path": null,
+      "image_prompt": "A mysterious location with undefined characteristics.",
+      "visited": true
+    },
+    "-1,2": {
+      "name": "Location (-1, 2)",
+      "description": "A mysterious place that appeared suddenly.",
+      "items": [],
+      "actors": [],
+      "exits": {},
+      "cached_image_path": null,
+      "image_prompt": "A mysterious location with undefined characteristics.",
       "visited": true
     }
   },

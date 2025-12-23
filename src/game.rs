@@ -510,14 +510,12 @@ Rules:
             // Parse CreateLocation(x, y, {location JSON})
             let after_paren = &action_str[14..]; // Remove "CreateLocation("
             
-            // Find the position of the SECOND comma to separate coordinates from JSON
-            let mut comma_count = 0;
-            let coords_end_pos = after_paren.find(|c| {
-                if c == ',' {
-                    comma_count += 1;
-                    comma_count == 2
+            // Find the comma immediately before the opening brace { (start of JSON)
+            let coords_end_pos = after_paren.rfind(',').and_then(|pos| {
+                if after_paren[pos+1..].trim_start().starts_with('{') {
+                    Some(pos)
                 } else {
-                    false
+                    None
                 }
             });
             
