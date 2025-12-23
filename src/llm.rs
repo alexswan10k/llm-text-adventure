@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use anyhow::{Result, Context};
-use crate::model::WorldUpdate;
+use crate::model::{WorldUpdate, Location};
 
 use std::time::Duration;
 
@@ -32,8 +32,8 @@ impl LlmClient {
             base_url,
             model_name,
             client: reqwest::ClientBuilder::new()
-                .timeout(Duration::from_secs(30))  // Reduced from 600 to 30 seconds
-                .connect_timeout(Duration::from_secs(10))  // Reduced from 60 to 10 seconds
+                .timeout(Duration::from_secs(60))
+                .connect_timeout(Duration::from_secs(15))
                 .build()
                 .expect("Failed to build reqwest client"),
         }
@@ -47,17 +47,17 @@ impl LlmClient {
                 Message { role: "user".to_string(), content: user_input.to_string() },
             ],
             temperature: 0.7,
-            max_tokens: -1,
+            max_tokens: 8192,
             stream: false,
         };
 
         let response = tokio::time::timeout(
-            Duration::from_secs(25),  // Slightly less than client timeout
+            Duration::from_secs(55),
             self.client.post(&format!("{}/v1/chat/completions", self.base_url))
                 .json(&request)
                 .send()
         ).await
-        .context("LLM request timed out after 25 seconds")?
+        .context("LLM request timed out after 55 seconds")?
         .context("Failed to send request to LLM")?;
 
         let response_json: serde_json::Value = response.json().await
@@ -66,12 +66,40 @@ impl LlmClient {
         let content = response_json["choices"][0]["message"]["content"].as_str()
             .context("No content in LLM response")?;
 
-        // Parse the content to extract JSON and Narrative
         self.parse_content(content)
     }
 
+    pub async fn generate_location(&self, system_prompt: &str, user_input: &str) -> Result<Location> {
+        let request = LlmRequest {
+            model: self.model_name.clone(),
+            messages: vec![
+                Message { role: "system".to_string(), content: system_prompt.to_string() },
+                Message { role: "user".to_string(), content: user_input.to_string() },
+            ],
+            temperature: 0.8,
+            max_tokens: 4096,
+            stream: false,
+        };
+
+        let response = tokio::time::timeout(
+            Duration::from_secs(55),
+            self.client.post(&format!("{}/v1/chat/completions", self.base_url))
+                .json(&request)
+                .send()
+        ).await
+        .context("LLM request timed out after 55 seconds")?
+        .context("Failed to send request to LLM")?;
+
+        let response_json: serde_json::Value = response.json().await
+            .context("Failed to parse LLM response JSON")?;
+
+        let content = response_json["choices"][0]["message"]["content"].as_str()
+            .context("No content in LLM response")?;
+
+        self.parse_location_json(content)
+    }
+
     fn parse_content(&self, content: &str) -> Result<WorldUpdate> {
-        // Try to find a JSON block
         let json_start = content.find('{');
         let json_end = content.rfind('}');
 
@@ -82,7 +110,21 @@ impl LlmClient {
             return Ok(update);
         }
 
-        // Fallback if no JSON found (shouldn't happen with good prompt, but handle it)
+        Err(anyhow::anyhow!("No JSON object found in LLM response"))
+    }
+
+    fn parse_location_json(&self, content: &str) -> Result<Location> {
+        let json_start = content.find('{');
+        let json_end = content.rfind('}');
+
+        if let (Some(start), Some(end)) = (json_start, json_end) {
+            let json_str = &content[start..=end];
+            let mut loc: Location = serde_json::from_str(json_str)
+                .context(format!("Failed to parse Location from LLM response: {}", json_str))?;
+            loc.visited = false;
+            return Ok(loc);
+        }
+
         Err(anyhow::anyhow!("No JSON object found in LLM response"))
     }
 }

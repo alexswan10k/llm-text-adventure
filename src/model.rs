@@ -55,14 +55,34 @@ pub struct Player {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Location {
+    #[serde(default = "default_location_name")]
     pub name: String,
+    #[serde(default = "default_location_description")]
     pub description: String,
-    pub items: Vec<String>, // List of Item IDs currently here
-    pub actors: Vec<String>, // List of Actor IDs currently here
-    pub exits: HashMap<String, Option<(i32, i32)>>, // Dir -> Coord or None (blocked)
+    #[serde(default)]
+    pub items: Vec<String>,
+    #[serde(default)]
+    pub actors: Vec<String>,
+    #[serde(default)]
+    pub exits: HashMap<String, Option<(i32, i32)>>,
+    #[serde(default)]
     pub cached_image_path: Option<String>,
+    #[serde(default = "default_image_prompt")]
     pub image_prompt: String,
-    pub visited: bool,  // New: Track if player has been here (for fog-of-war)
+    #[serde(default)]
+    pub visited: bool,
+}
+
+fn default_location_name() -> String {
+    "Unknown Location".to_string()
+}
+
+fn default_location_description() -> String {
+    "An unknown place.".to_string()
+}
+
+fn default_image_prompt() -> String {
+    "A mysterious location".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

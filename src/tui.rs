@@ -33,17 +33,18 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
     pub async fn run(&mut self, game: &mut Game) -> Result<()> {
         let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         loop {
-            let input_buffer = self.input_buffer.clone();
-            
+            let command_buffer = self.input_buffer.clone();
+
             // Update spinner frame when processing
             if game.state == GameState::Processing || game.state == GameState::UpdatingWorld {
                 self.spinner_frame = (self.spinner_frame + 1) % spinner_chars.len();
             }
-            
+
             self.terminal.draw(|frame| {
                 match game.state {
                     GameState::SplashScreen => Self::render_splash_screen(frame, game),
-                    _ => Self::render_main_game(frame, game, &input_buffer, spinner_chars[self.spinner_frame]),
+                    GameState::NamingWorld => Self::render_naming_screen(frame, game, &game.new_world_name),
+                    _ => Self::render_main_game(frame, game, &command_buffer, spinner_chars[self.spinner_frame]),
                 }
             })?;
 
@@ -51,146 +52,153 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
             if let Some(event) = self.event_source.next_event().await? {
                 if let Event::Key(key) = event {
                     if key.kind == KeyEventKind::Press {
+                        // Handle quit key first, before any state checks
+                        if key.code == KeyCode::Esc {
+                            if game.state == GameState::NamingWorld {
+                                game.process_input("back").await?;
+                                self.input_buffer.clear();
+                            } else {
+                                return Ok(());
+                            }
+                        }
+                        
                         match key.code {
                             KeyCode::Enter => {
                                 if game.state == GameState::SplashScreen {
-                                    // Handle selection
                                     if game.selected_save_index < game.save_list.len() {
                                         game.process_input("load").await?;
                                     } else {
-                                        // "New Game" is the last item
                                         game.process_input("new").await?;
                                     }
+                                } else if game.state == GameState::NamingWorld {
+                                    game.process_input("enter").await?;
                                 } else if !self.input_buffer.is_empty() {
                                     let input = self.input_buffer.clone();
-game.log(&format!("Enter pressed: '{}' (len: {}) state: {:?}", input, input.len(), game.state));
+                                    game.log(&format!("Enter pressed: '{}' (len: {}) state: {:?}", input, input.len(), game.state));
                                     self.input_buffer.clear();
                                     game.process_input(&input).await?;
+                                }
+                            },
+                            KeyCode::Char('c') => {
+                                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                                    game.log("Ctrl+C pressed, quitting...");
+                                    return Ok(());
+                                }
+                                if game.state == GameState::SplashScreen {
+                                    // Allow navigation in splash screen
+                                } else if game.state == GameState::NamingWorld {
+                                    game.process_input("c").await?;
+                                } else if game.state == GameState::WaitingForInput {
+                                    self.input_buffer.push('c');
+                                } else {
+                                    game.log(&format!("Ignored char 'c' - state is {:?}", game.state));
                                 }
                             },
                             KeyCode::Char(c) => {
                                 if game.state == GameState::SplashScreen {
                                     // Allow navigation in splash screen
+                                } else if game.state == GameState::NamingWorld {
+                                    game.process_input(&c.to_string()).await?;
                                 } else if game.state == GameState::WaitingForInput {
                                     self.input_buffer.push(c);
+                                } else {
+                                    game.log(&format!("Ignored char '{}' - state is {:?}", c, game.state));
                                 }
-                                // Block input during processing/updating
                             },
                             KeyCode::Backspace => {
                                 if game.state == GameState::SplashScreen {
                                     // Allow navigation in splash screen
+                                } else if game.state == GameState::NamingWorld {
+                                    game.process_input("backspace").await?;
                                 } else if game.state == GameState::WaitingForInput {
                                     self.input_buffer.pop();
+                                } else {
+                                    game.log(&format!("Ignored backspace - state is {:?}", game.state));
                                 }
-                                // Block input during processing/updating
                             },
                             KeyCode::Up => {
                                 if game.state == GameState::SplashScreen {
                                     game.process_input("up").await?;
                                 } else if game.state == GameState::WaitingForInput {
-                                    // Quick move north: (x, y+1)
                                     let (x, y) = game.world.current_pos;
                                     let target_pos = (x, y + 1);
-                                    
+
                                     if let Some(target_loc) = game.world.locations.get(&target_pos).cloned() {
-                                        // Quick move: explored/exists
                                         game.world.current_pos = target_pos;
                                         if let Some(loc) = game.world.locations.get_mut(&target_pos) {
                                             loc.visited = true;
                                         }
                                         game.last_narrative = format!("You move north to {}.\n{}", target_loc.name, target_loc.description);
                                         game.log("Quick move north");
-                                        // Auto-save
                                         if let Some(path) = &game.current_save_path {
                                             let _ = game.save_manager.save_game(path, &game.world);
                                         }
                                     } else {
-                                        // LLM fallback
-                                        game.process_input("go north").await?;
-                                        game.log("Queried model for go north");
+                                        game.generate_and_move_to(target_pos, "north").await?;
                                     }
                                 }
-                                // Block during processing/updating
                             },
                             KeyCode::Down => {
                                 if game.state == GameState::SplashScreen {
                                     game.process_input("down").await?;
                                 } else if game.state == GameState::WaitingForInput {
-                                    // Quick move south: (x, y-1)
                                     let (x, y) = game.world.current_pos;
                                     let target_pos = (x, y - 1);
-                                    
+
                                     if let Some(target_loc) = game.world.locations.get(&target_pos).cloned() {
-                                        // Quick move: explored/exists
                                         game.world.current_pos = target_pos;
                                         if let Some(loc) = game.world.locations.get_mut(&target_pos) {
                                             loc.visited = true;
                                         }
                                         game.last_narrative = format!("You move south to {}.\n{}", target_loc.name, target_loc.description);
                                         game.log("Quick move south");
-                                        // Auto-save
                                         if let Some(path) = &game.current_save_path {
                                             let _ = game.save_manager.save_game(path, &game.world);
                                         }
                                     } else {
-                                        // LLM fallback
-                                        game.process_input("go south").await?;
-                                        game.log("Queried model for go south");
+                                        game.generate_and_move_to(target_pos, "south").await?;
                                     }
                                 }
-                                // Block during processing/updating
                             },
                             KeyCode::Left => {
                                 if game.state == GameState::WaitingForInput {
-                                    // Quick move west: (x-1, y)
                                     let (x, y) = game.world.current_pos;
                                     let target_pos = (x - 1, y);
-                                    
+
                                     if let Some(target_loc) = game.world.locations.get(&target_pos).cloned() {
-                                        // Quick move: explored/exists
                                         game.world.current_pos = target_pos;
                                         if let Some(loc) = game.world.locations.get_mut(&target_pos) {
                                             loc.visited = true;
                                         }
                                         game.last_narrative = format!("You move west to {}.\n{}", target_loc.name, target_loc.description);
                                         game.log("Quick move west");
-                                        // Auto-save
                                         if let Some(path) = &game.current_save_path {
                                             let _ = game.save_manager.save_game(path, &game.world);
                                         }
                                     } else {
-                                        // LLM fallback
-                                        game.process_input("go west").await?;
-                                        game.log("Queried model for go west");
+                                        game.generate_and_move_to(target_pos, "west").await?;
                                     }
                                 }
-                                // Block during processing/updating
                             },
                             KeyCode::Right => {
                                 if game.state == GameState::WaitingForInput {
-                                    // Quick move east: (x+1, y)
                                     let (x, y) = game.world.current_pos;
                                     let target_pos = (x + 1, y);
-                                    
+
                                     if let Some(target_loc) = game.world.locations.get(&target_pos).cloned() {
-                                        // Quick move: explored/exists
                                         game.world.current_pos = target_pos;
                                         if let Some(loc) = game.world.locations.get_mut(&target_pos) {
                                             loc.visited = true;
                                         }
                                         game.last_narrative = format!("You move east to {}.\n{}", target_loc.name, target_loc.description);
                                         game.log("Quick move east");
-                                        // Auto-save
                                         if let Some(path) = &game.current_save_path {
                                             let _ = game.save_manager.save_game(path, &game.world);
                                         }
                                     } else {
-                                        // LLM fallback
-                                        game.process_input("go east").await?;
-                                        game.log("Queried model for go east");
+                                        game.generate_and_move_to(target_pos, "east").await?;
                                     }
                                 }
-                                // Block during processing/updating
                             },
                             KeyCode::Esc => {
                                 return Ok(());
@@ -247,6 +255,37 @@ game.log(&format!("Enter pressed: '{}' (len: {}) state: {:?}", input, input.len(
         state.select(Some(game.selected_save_index));
 
         frame.render_stateful_widget(list, chunks[1], &mut state);
+    }
+
+    fn render_naming_screen(frame: &mut Frame, game: &Game, _input_buffer: &str) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(30),
+                Constraint::Percentage(40),
+                Constraint::Percentage(30),
+            ])
+            .split(frame.area());
+
+        let title = Paragraph::new("NAME YOUR NEW WORLD")
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::ALL));
+        frame.render_widget(title, chunks[0]);
+
+        let input_display = if game.new_world_name.is_empty() {
+            "_\n".to_string()
+        } else {
+            format!("{}_\n", game.new_world_name)
+        };
+        let input_block = Paragraph::new(input_display)
+            .alignment(Alignment::Center)
+            .block(Block::default().title("World Name").borders(Borders::ALL));
+        frame.render_widget(input_block, chunks[1]);
+
+        let help = Paragraph::new("Type a name and press Enter\nPress Backspace to delete\nPress Esc to go back")
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::ALL));
+        frame.render_widget(help, chunks[2]);
     }
 
     fn render_map(game: &Game) -> String {

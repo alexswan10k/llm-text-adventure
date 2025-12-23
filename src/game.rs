@@ -10,6 +10,7 @@ use chrono::prelude::*;
 #[derive(PartialEq, Debug)]
 pub enum GameState {
     SplashScreen,
+    NamingWorld,
     WaitingForInput,
     Processing,
     UpdatingWorld,
@@ -28,6 +29,7 @@ pub struct Game {
     pub debug_log: Vec<String>,
     pub current_options: Vec<String>,
     pub status_message: String,
+    pub new_world_name: String,
 }
 
 impl Game {
@@ -47,6 +49,7 @@ impl Game {
             debug_log: vec!["Game initialized.".to_string()],
             current_options: Vec::new(),
             status_message: "".to_string(),
+            new_world_name: String::new(),
         }
     }
 
@@ -60,8 +63,8 @@ impl Game {
     pub async fn process_input(&mut self, input: &str) -> Result<()> {
         match self.state {
             GameState::SplashScreen => self.handle_splash_input(input).await,
+            GameState::NamingWorld => self.handle_naming_input(input).await,
             GameState::WaitingForInput => {
-                // Check if input is a number selection
                 if let Ok(idx) = input.parse::<usize>() {
                     if idx > 0 && idx <= self.current_options.len() {
                         let selected_action = self.current_options[idx - 1].clone();
@@ -75,27 +78,96 @@ impl Game {
         }
     }
 
+    pub async fn generate_and_move_to(&mut self, target_pos: (i32, i32), direction: &str) -> Result<()> {
+        let (x, y) = self.world.current_pos;
+        let (target_x, target_y) = target_pos;
+
+        self.log(&format!("Generating location at ({}, {}) heading {}", target_x, target_y, direction));
+
+        let current_loc = self.world.locations.get(&self.world.current_pos)
+            .context("Current location not found")?;
+
+        let prompt = format!(
+            r#"Current Location: {} at ({}, {})
+Description: {}
+
+The player is heading {} toward coordinates ({}, {}).
+This grid cell is currently EMPTY and needs to be generated.
+
+Create a new location at ({}, {}) that fits thematically with the current location.
+Return ONLY a JSON object:
+{{
+  "name": "Location name",
+  "description": "Description of what the player sees",
+  "image_prompt": "Visual description for generating an image",
+  "exits": {{"north": null, "south": null, "east": null, "west": null}},
+  "items": [],
+  "actors": []
+}}
+
+Do NOT include any narrative text or MoveTo actions. Just the location JSON."#,
+            current_loc.name, x, y,
+            current_loc.description,
+            direction, target_x, target_y,
+            target_x, target_y
+        );
+
+        let system_prompt = "You are a world generator for a text adventure game. Create interesting, thematically consistent locations.";
+
+        self.state = GameState::Processing;
+        self.status_message = format!("Exploring {}...", direction);
+
+        match self.llm_client.generate_location(system_prompt, &prompt).await {
+            Ok(mut location) => {
+                location.visited = true;
+                self.world.locations.insert(target_pos, location);
+                self.world.current_pos = target_pos;
+
+                let loc = self.world.locations.get(&target_pos).unwrap();
+                self.last_narrative = format!("You travel {} to {}.\n{}", direction, loc.name, loc.description);
+                self.log(&format!("Created and moved to ({}, {})", target_x, target_y));
+
+                if let Some(path) = &self.current_save_path {
+                    let _ = self.save_manager.save_game(path, &self.world);
+                }
+            }
+            Err(e) => {
+                self.log(&format!("Failed to generate location: {}", e));
+
+                let fallback_loc = Location {
+                    name: format!("Mysterious area ({}, {})", target_x, target_y),
+                    description: "A mysterious place that appeared suddenly.".to_string(),
+                    items: vec![],
+                    actors: vec![],
+                    exits: HashMap::new(),
+                    cached_image_path: None,
+                    image_prompt: "A mysterious location with undefined characteristics.".to_string(),
+                    visited: true,
+                };
+
+                self.world.locations.insert(target_pos, fallback_loc);
+                self.world.current_pos = target_pos;
+
+                let loc = self.world.locations.get(&target_pos).unwrap();
+                self.last_narrative = format!("You travel {} into the unknown.\n{}", direction, loc.description);
+                self.log(&format!("Used fallback location at ({}, {})", target_x, target_y));
+
+                if let Some(path) = &self.current_save_path {
+                    let _ = self.save_manager.save_game(path, &self.world);
+                }
+            }
+        }
+
+        self.state = GameState::WaitingForInput;
+        self.status_message = "".to_string();
+        Ok(())
+    }
+
     async fn handle_splash_input(&mut self, input: &str) -> Result<()> {
         match input {
             "new" => {
-                self.world = WorldState::new();
-                // Initialize default location if needed
-                if self.world.locations.is_empty() {
-                    let start_loc = Location {
-                        name: "The Beginning".to_string(),
-                        description: "You stand in a void of potential. Anything can happen here.".to_string(),
-                        items: vec![],
-                        actors: vec![],
-                        exits: HashMap::new(),
-                        cached_image_path: None,
-                        image_prompt: "A swirling void of colors and shapes, representing potential.".to_string(),
-                        visited: true,  // Starting location is visited
-                    };
-                    self.world.locations.insert((0, 0), start_loc);
-                }
-                self.current_save_path = Some(self.save_manager.create_new_save("new_world", &self.world)?);
-                self.state = GameState::WaitingForInput;
-                self.last_narrative = "You have created a new world. What do you want to do?".to_string();
+                self.new_world_name.clear();
+                self.state = GameState::NamingWorld;
             }
             "load" => {
                 if !self.save_list.is_empty() {
@@ -117,6 +189,43 @@ impl Game {
                 }
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    async fn handle_naming_input(&mut self, input: &str) -> Result<()> {
+        match input {
+            "enter" => {
+                if !self.new_world_name.trim().is_empty() {
+                    self.world = WorldState::new();
+                    let start_loc = Location {
+                        name: "The Beginning".to_string(),
+                        description: "You stand in a void of potential. Anything can happen here.".to_string(),
+                        items: vec![],
+                        actors: vec![],
+                        exits: HashMap::new(),
+                        cached_image_path: None,
+                        image_prompt: "A swirling void of colors and shapes, representing potential.".to_string(),
+                        visited: true,
+                    };
+                    self.world.locations.insert((0, 0), start_loc);
+                    let save_name = self.new_world_name.trim();
+                    self.current_save_path = Some(self.save_manager.create_new_save(save_name, &self.world)?);
+                    self.state = GameState::WaitingForInput;
+                    self.last_narrative = format!("Created new world: '{}'. What do you want to do?", save_name);
+                    self.log(&format!("Created new world: {}", save_name));
+                }
+            }
+            "back" => {
+                self.state = GameState::SplashScreen;
+                self.new_world_name.clear();
+            }
+            "backspace" => {
+                self.new_world_name.pop();
+            }
+            _ => {
+                self.new_world_name.push_str(input);
+            }
         }
         Ok(())
     }
@@ -150,15 +259,15 @@ impl Game {
         // Add adjacent cell information for spatial context
         let (x, y) = self.world.current_pos;
         let adjacent_info = format!(
-            "Adjacent cells:\nNorth ({}, {}): {}\nSouth ({}, {}): {}\nEast ({}, {}): {}\nWest ({}, {}): {}",
+            "Adjacent cells:\nNorth at ({}, {}): {}\nSouth at ({}, {}): {}\nEast at ({}, {}): {}\nWest at ({}, {}): {}",
             x, y + 1,
-            self.world.locations.get(&(x, y + 1)).map_or("Unknown".to_string(), |l| format!("{} - {}", l.name, l.description)),
+            self.world.locations.get(&(x, y + 1)).map_or("UNKNOWN (not yet explored)".to_string(), |l| format!("{} - {}", l.name, l.description)),
             x, y - 1,
-            self.world.locations.get(&(x, y - 1)).map_or("Unknown".to_string(), |l| format!("{} - {}", l.name, l.description)),
+            self.world.locations.get(&(x, y - 1)).map_or("UNKNOWN (not yet explored)".to_string(), |l| format!("{} - {}", l.name, l.description)),
             x + 1, y,
-            self.world.locations.get(&(x + 1, y)).map_or("Unknown".to_string(), |l| format!("{} - {}", l.name, l.description)),
+            self.world.locations.get(&(x + 1, y)).map_or("UNKNOWN (not yet explored)".to_string(), |l| format!("{} - {}", l.name, l.description)),
             x - 1, y,
-            self.world.locations.get(&(x - 1, y)).map_or("Unknown".to_string(), |l| format!("{} - {}", l.name, l.description))
+            self.world.locations.get(&(x - 1, y)).map_or("UNKNOWN (not yet explored)".to_string(), |l| format!("{} - {}", l.name, l.description))
         );
 
         let context_str = format!(
@@ -222,7 +331,7 @@ Item object:
 Rules:
 1. Use grid coordinates: north +y, south -y, east +x, west -x.
 2. ONLY CreateLocation(x,y,...) if NO location exists at (x,y).
-3. For movement: If target (x,y) exists, use MoveTo(x,y). Else CreateLocation first.
+3. For movement: If user provides target coordinates like "go east to coordinates (x, y)", use MoveTo(x,y). If target exists, use MoveTo. If not, CreateLocation first then MoveTo.
 4. Assign exits with exact coords: e.g., "north": [x, y+1] or null for blocked.
 5. Maintain spatial coherence: no teleporting, adjacent only unless specified.
 6. Use `AddItemToInventory` / `RemoveItemFromInventory` for picking up/dropping items.
@@ -231,6 +340,7 @@ Rules:
 "#;
 
         self.log(&format!("Processing input: '{}'", input));
+        self.log(&format!("Current player position: {:?}", self.world.current_pos));
 
         // 2. Call LLM with Retry Loop
         let max_attempts = 20;
@@ -244,6 +354,9 @@ Rules:
             match self.llm_client.generate_update(system_prompt, &context_str).await {
                 Ok(update) => {
                     self.log(&format!("Received update: {} actions, {} suggestions.", update.actions.len(), update.suggested_actions.len()));
+                    for (i, action) in update.actions.iter().enumerate() {
+                        self.log(&format!("Action {}: {}", i, action));
+                    }
                     self.state = GameState::UpdatingWorld;
                     self.status_message = "Processing response...".to_string();
 
@@ -308,17 +421,23 @@ Rules:
 
     fn parse_and_apply_action(&mut self, action_str: &str) -> Result<()> {
         let action_str = action_str.trim();
-        
+
+        self.log(&format!("Parsing action: '{}'", action_str));
+
         if action_str.starts_with("MoveTo(") {
             // Parse MoveTo(x, y) - handle various formats
             let coords_str = action_str.strip_prefix("MoveTo(")
                 .and_then(|s| s.strip_suffix(')'))
                 .unwrap_or("");
-            
+
+            self.log(&format!("MoveTo coords_str: '{}'", coords_str));
+
             if let Some((x_str, y_str)) = coords_str.split_once(',') {
+                self.log(&format!("Parsing x='{}' y='{}'", x_str.trim(), y_str.trim()));
                 let x: i32 = x_str.trim().parse().context("Invalid x coordinate")?;
                 let y: i32 = y_str.trim().parse().context("Invalid y coordinate")?;
                 let pos = (x, y);
+                self.log(&format!("Parsed MoveTo to ({}, {})", x, y));
                 
                 if self.world.locations.contains_key(&pos) {
                     self.world.current_pos = pos;
@@ -345,9 +464,21 @@ Rules:
         } else if action_str.starts_with("CreateLocation(") {
             // Parse CreateLocation(x, y, {location JSON})
             let after_paren = &action_str[14..]; // Remove "CreateLocation("
-            if let Some(comma_pos) = after_paren.find(',') {
-                let coords_part = &after_paren[..comma_pos];
-                let json_part = &after_paren[comma_pos+1..].trim();
+            
+            // Find the position of the SECOND comma to separate coordinates from JSON
+            let mut comma_count = 0;
+            let coords_end_pos = after_paren.find(|c| {
+                if c == ',' {
+                    comma_count += 1;
+                    comma_count == 2
+                } else {
+                    false
+                }
+            });
+            
+            if let Some(coords_end_pos) = coords_end_pos {
+                let coords_part = &after_paren[..coords_end_pos];
+                let json_part = &after_paren[coords_end_pos+1..].trim();
                 
                 if let Some((x_str, y_str)) = coords_part.split_once(',') {
                     let x: i32 = x_str.trim().parse().context("Invalid x coordinate")?;
@@ -358,10 +489,30 @@ Rules:
                         let json_str = json_part.trim_end_matches(')');
                         let mut loc: crate::model::Location = serde_json::from_str(json_str)
                             .context(format!("Failed to parse CreateLocation: {}", json_str))?;
+                        
+                        // Validate exits point to valid coordinates or null
+                        for (direction, exit_coord) in &loc.exits {
+                            if let Some((exit_x, exit_y)) = exit_coord {
+                                // Check if exit coordinates are reasonable (adjacent unless specified)
+                                let dx = (*exit_x - x).abs();
+                                let dy = (*exit_y - y).abs();
+                                if dx > 1 || dy > 1 {
+                                    self.log(&format!("Warning: Exit '{}' from ({},{}) to ({},{}) is not adjacent", direction, x, y, exit_x, exit_y));
+                                }
+                            }
+                        }
+                        
                         loc.visited = true;  // Created for player
                         self.world.locations.insert(pos, loc);
+                        self.log(&format!("SUCCESS: Created location at ({}, {})", x, y));
+                    } else {
+                        self.log(&format!("Location at ({}, {}) already exists, skipping CreateLocation", x, y));
                     }
+                } else {
+                    self.log(&format!("ERROR: Failed to parse coordinates from: '{}'", coords_part));
                 }
+            } else {
+                self.log(&format!("ERROR: Could not find two commas in: '{}'", after_paren));
             }
         } else if action_str.starts_with("UpdateLocation(") {
             // Parse UpdateLocation(x, y, {location JSON})

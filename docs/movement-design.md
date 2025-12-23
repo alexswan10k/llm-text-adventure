@@ -84,53 +84,72 @@ fn handle_arrow_key(dir: Direction) -> Result<(), Error> {
 
 ## 3. LLM Context and Prompt Updates
 
-### Enhanced Context in [`handle_game_input`](src/game.rs:126)
-- Append adjacent summaries:
+### Enhanced Context in [`handle_game_input`](src/game.rs:150)
+- Append adjacent existence info (simplified from full descriptions):
   ```
   Adjacent cells:
-  North (x, y+1): {name/desc if exists}
-  South (x, y-1): ...
+  North (x, y+1): Exists/Empty
+  South (x, y-1): Exists/Empty  
   East/West similarly.
   ```
+- **Change**: Reduced from full name/description to simple existence status to avoid LLM confusion.
 
-### System Prompt Updates (lines 165-215 in [`game.rs`](src/game.rs))
-```
-Rules:
+### System Prompt Updates (lines 179-231 in [`game.rs`](src/game.rs))
+**Improved Prompt with Examples:**
+- Clear examples of proper `CreateLocation` → `MoveTo` sequences
+- Simplified structure with emphasis on the two-step movement pattern
+- Specific JSON format examples for new vs existing locations
+- Reduced adjacent cell context to existence info only (not full descriptions)
+
+**Key Rules:**
 - Use grid coordinates: north +y, south -y, east +x, west -x.
-- ONLY CreateLocation(x,y,...) if NO location exists at (x,y).
-- For movement: If target (x,y) exists, use MoveTo(x,y). Else CreateLocation first.
+- **CRITICAL**: For movement to NEW locations, ALWAYS use BOTH actions: `CreateLocation(x,y,{...})` then `MoveTo(x,y)`
+- For movement to EXISTING locations: use only `MoveTo(x,y)`
 - Assign exits with exact coords: e.g., "north": [x, y+1] or null for blocked.
-- Maintain spatial coherence: no teleporting, adjacent only unless specified.
-```
+- Maintain spatial coherence: adjacent movement only unless specified.
 
-## 4. LLM Action Parsing and Execution in [`parse_and_apply_action`](src/game.rs:281)
+## 4. LLM Action Parsing and Execution in [`parse_and_apply_action`](src/game.rs:309)
+
+**Key Implementation Changes:**
+- **Strict MoveTo validation**: `MoveTo(x,y)` now fails if location doesn't exist (no more default location creation)
+- **Error correction**: When actions fail, the system provides specific error messages and retries with corrected prompts
+- **Exit validation**: Validates that exits point to adjacent coordinates and checks for bidirectional consistency
+- **Three-pass processing**: 
+  1. Create all locations first
+  2. Handle movement and item actions  
+  3. Validate exit consistency
 
 Pseudocode:
 ```
-fn parse_action(action: &str) -> Option<Action> {
+fn parse_and_apply_action(action: &str) -> Result<()> {
     if action.starts_with("MoveTo(") {
         let (x, y) = parse_coords(action);
         if world.locations.contains_key(&(x,y)) {
-            Action::MoveTo((x,y))
+            world.current_pos = (x,y);
+            mark_visited((x,y));
         } else {
-            // Ignore or log error; prompt will handle creation
-            None
+            return Err("Cannot MoveTo to non-existent location. Use CreateLocation first.");
         }
     } else if action.starts_with("CreateLocation(") {
         let (x, y, loc_json) = parse_create(action);
         if !world.locations.contains_key(&(x,y)) {
             let loc: Location = from_json(loc_json);
-            // Validate exits point to valid/existing or None
+            validate_exits(&loc); // Check adjacency and coordinate validity
             world.locations.insert((x,y), loc);
-            world.locations.get_mut(&(x,y)).unwrap().visited = true;  // Since created for player
+            mark_visited((x,y));
         }
-        Action::Created((x,y))
     }
-    // Sequential: Create then MoveTo
+    // ... other actions
+}
+
+fn validate_exit_consistency() {
+    // Check that exits are bidirectional where appropriate
+    // Log warnings for mismatched exits
 }
 ```
 
 - Auto-save after any Create/Update.
+- **Error recovery**: Failed actions trigger retry with specific error context.
 
 ## 5. Improved Map Rendering in [`render_map`](src/tui.rs:223)
 
