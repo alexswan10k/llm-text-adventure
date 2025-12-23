@@ -2,7 +2,8 @@ use crate::model::{WorldState, Location};
 use crate::llm::LlmClient;
 use crate::agent::Agent;
 use crate::save::{SaveManager, SaveInfo};
-use anyhow::{Result, Context};
+use crate::commands::Command;
+use anyhow::Result;
 use std::collections::HashMap;
 
 use chrono::prelude::*;
@@ -61,31 +62,26 @@ impl Game {
     }
 
     pub async fn process_input(&mut self, input: &str) -> Result<()> {
+        let command = Command::from_str(input);
+        self.process_command(command).await
+    }
+
+    pub async fn process_command(&mut self, command: Command) -> Result<()> {
         match self.state {
-            GameState::SplashScreen => self.handle_splash_input(input).await,
-            GameState::NamingWorld => self.handle_naming_input(input).await,
-            GameState::WaitingForInput => {
-                if let Ok(idx) = input.parse::<usize>() {
-                    if idx > 0 && idx <= self.current_options.len() {
-                        let selected_action = self.current_options[idx - 1].clone();
-                        self.log(&format!("User selected option {}: {}", idx, selected_action));
-                        return self.handle_game_input(&selected_action).await;
-                    }
-                }
-                self.handle_game_input(input).await
-            },
+            GameState::SplashScreen => self.handle_splash_command(command).await,
+            GameState::NamingWorld => self.handle_naming_command(command).await,
+            GameState::WaitingForInput => self.handle_game_command(command).await,
             _ => Ok(()),
         }
     }
 
     pub async fn generate_and_move_to(&mut self, target_pos: (i32, i32), direction: &str) -> Result<()> {
-        let (x, y) = self.world.current_pos;
         let (target_x, target_y) = target_pos;
 
         self.log(&format!("Generating location at ({}, {}) heading {}", target_x, target_y, direction));
 
         let current_loc = self.world.locations.get(&self.world.current_pos)
-            .context("Current location not found")?;
+            .ok_or_else(|| anyhow::anyhow!("Current location not found"))?;
 
         let prompt = format!(
             r#"Current Location: {} at ({}, {})
@@ -95,7 +91,9 @@ The player is heading {} toward coordinates ({}, {}).
 This grid cell is currently EMPTY and needs to be generated.
 
 Create a new location at ({}, {}) that fits thematically with the current location.
-Return ONLY a JSON object:
+IMPORTANT: All exits must be null (blocked). The game will create actual exit connections automatically.
+
+Return ONLY a valid JSON object:
 {{
   "name": "Location name",
   "description": "Description of what the player sees",
@@ -105,14 +103,22 @@ Return ONLY a JSON object:
   "actors": []
 }}
 
-Do NOT include any narrative text or MoveTo actions. Just the location JSON."#,
-            current_loc.name, x, y,
+CRITICAL: 
+- exits MUST be null objects (blocked), NOT strings or booleans
+- items MUST be an empty array []
+- actors MUST be an empty array []
+- NO narrative text, NO extra commentary
+
+Just the JSON. Nothing else."#,
+            current_loc.name,
+            self.world.current_pos.0,
+            self.world.current_pos.1,
             current_loc.description,
             direction, target_x, target_y,
             target_x, target_y
         );
 
-        let system_prompt = "You are a world generator for a text adventure game. Create interesting, thematically consistent locations.";
+        let system_prompt = "You are a world generator for a text adventure game. Create interesting, thematically consistent locations. You MUST output valid JSON only.";
 
         self.state = GameState::Processing;
         self.status_message = format!("Exploring {}...", direction);
@@ -163,13 +169,13 @@ Do NOT include any narrative text or MoveTo actions. Just the location JSON."#,
         Ok(())
     }
 
-    async fn handle_splash_input(&mut self, input: &str) -> Result<()> {
-        match input {
-            "new" => {
+    async fn handle_splash_command(&mut self, command: Command) -> Result<()> {
+        match command {
+            Command::New => {
                 self.new_world_name.clear();
                 self.state = GameState::NamingWorld;
             }
-            "load" => {
+            Command::Load => {
                 if !self.save_list.is_empty() {
                     let save = &self.save_list[self.selected_save_index];
                     self.world = self.save_manager.load_save(&save.filename)?;
@@ -178,14 +184,28 @@ Do NOT include any narrative text or MoveTo actions. Just the location JSON."#,
                     self.last_narrative = format!("Loaded world: {}. What do you want to do?", save.filename);
                 }
             }
-            "up" => {
+            Command::Up => {
                 if self.selected_save_index > 0 {
                     self.selected_save_index -= 1;
                 }
             }
-            "down" => {
+            Command::Down => {
                 if self.selected_save_index < self.save_list.len() {
                     self.selected_save_index += 1;
+                }
+            }
+            Command::Delete => {
+                if !self.save_list.is_empty() {
+                    let save = &self.save_list[self.selected_save_index];
+                    if let Err(e) = self.save_manager.delete_save(&save.filename) {
+                        self.log(&format!("Failed to delete save: {}", e));
+                    } else {
+                        self.log(&format!("Deleted save: {}", save.filename));
+                        self.save_list = self.save_manager.list_saves().unwrap_or_default();
+                        if self.selected_save_index >= self.save_list.len() && self.selected_save_index > 0 {
+                            self.selected_save_index = self.save_list.len() - 1;
+                        }
+                    }
                 }
             }
             _ => {}
@@ -193,9 +213,9 @@ Do NOT include any narrative text or MoveTo actions. Just the location JSON."#,
         Ok(())
     }
 
-    async fn handle_naming_input(&mut self, input: &str) -> Result<()> {
-        match input {
-            "enter" => {
+    async fn handle_naming_command(&mut self, command: Command) -> Result<()> {
+        match command {
+            Command::Enter => {
                 if !self.new_world_name.trim().is_empty() {
                     self.world = WorldState::new();
                     let start_loc = Location {
@@ -216,25 +236,55 @@ Do NOT include any narrative text or MoveTo actions. Just the location JSON."#,
                     self.log(&format!("Created new world: {}", save_name));
                 }
             }
-            "back" => {
+            Command::Back => {
                 self.state = GameState::SplashScreen;
                 self.new_world_name.clear();
             }
-            "backspace" => {
+            Command::Backspace => {
                 self.new_world_name.pop();
             }
-            _ => {
-                self.new_world_name.push_str(input);
+            Command::TextInput(text) => {
+                self.new_world_name.push_str(&text);
             }
+            _ => {}
         }
         Ok(())
     }
 
-    async fn handle_game_input(&mut self, input: &str) -> Result<()> {
+    async fn handle_game_command(&mut self, command: Command) -> Result<()> {
+        match command {
+            Command::MoveNorth => {
+                self.handle_quick_movement("north").await?;
+            }
+            Command::MoveSouth => {
+                self.handle_quick_movement("south").await?;
+            }
+            Command::MoveEast => {
+                self.handle_quick_movement("east").await?;
+            }
+            Command::MoveWest => {
+                self.handle_quick_movement("west").await?;
+            }
+            Command::SelectOption(idx) => {
+                if idx > 0 && idx <= self.current_options.len() {
+                    let selected_action = self.current_options[idx - 1].clone();
+                    self.log(&format!("User selected option {}: {}", idx, selected_action));
+                    self.handle_agent_action(&selected_action).await?;
+                }
+            }
+            Command::TextInput(text) => {
+                self.handle_agent_action(&text).await?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn handle_agent_action(&mut self, action: &str) -> Result<()> {
         self.state = GameState::Processing;
         self.status_message = "Thinking...".to_string();
 
-        self.log(&format!("Processing input: '{}'", input));
+        self.log(&format!("Processing action: '{}'", action));
         self.log(&format!("Current player position: {:?}", self.world.current_pos));
 
         let mut agent = Agent::new(self.llm_client.clone(), self.world.clone());
@@ -246,19 +296,20 @@ Do NOT include any narrative text or MoveTo actions. Just the location JSON."#,
             self.status_message = format!("Attempt {}/{} - Processing...", attempts, max_attempts);
             self.log(&self.status_message.clone());
 
-            match agent.process_action(input).await {
+            match agent.process_action(action).await {
                 Ok(response) => {
-                    self.log(&format!("Agent returned narrative ({} chars), {} suggestions",
-                        response.narrative.len(), response.suggested_actions.len()));
-
-                    self.world = agent.take_world();
-                    self.last_narrative = response.narrative;
-                    self.current_options = response.suggested_actions;
-
-                    if let Some(path) = &self.current_save_path {
-                        let _ = self.save_manager.save_game(path, &self.world);
+                    if response.narrative.contains("Failed after") ||
+                       response.narrative.contains("Agent stopped") ||
+                       response.narrative.contains("Timeout") {
+                        self.last_narrative = response.narrative;
+                    } else {
+                        self.world = agent.take_world();
+                        if let Some(path) = &self.current_save_path {
+                            let _ = self.save_manager.save_game(path, &self.world);
+                        }
+                        self.last_narrative = response.narrative;
                     }
-
+                    self.current_options = response.suggested_actions;
                     self.state = GameState::WaitingForInput;
                     self.status_message = "".to_string();
                     break;
@@ -278,6 +329,35 @@ Do NOT include any narrative text or MoveTo actions. Just the location JSON."#,
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_quick_movement(&mut self, direction: &str) -> Result<()> {
+        let (x, y) = self.world.current_pos;
+        let target_pos = match direction {
+            "north" => (x, y + 1),
+            "south" => (x, y - 1),
+            "east" => (x + 1, y),
+            "west" => (x - 1, y),
+            _ => return Ok(()),
+        };
+
+        // If location exists, quick move (no LLM)
+        if let Some(target_loc) = self.world.locations.get(&target_pos).cloned() {
+            self.world.current_pos = target_pos;
+            if let Some(loc) = self.world.locations.get_mut(&target_pos) {
+                loc.visited = true;
+            }
+            self.last_narrative = format!("You move {} to {}.\n{}", direction, target_loc.name, target_loc.description);
+            self.log(&format!("Quick move {} to existing location ({}, {})", direction, target_pos.0, target_pos.1));
+            if let Some(path) = &self.current_save_path {
+                let _ = self.save_manager.save_game(path, &self.world);
+            }
+        } else {
+            // New location - must use LLM
+            self.generate_and_move_to(target_pos, direction).await?;
         }
 
         Ok(())

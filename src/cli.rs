@@ -1,4 +1,5 @@
 use crate::game::Game;
+use crate::commands::Command;
 use crate::model::ItemState;
 use anyhow::Result;
 use std::io::{self, Write};
@@ -137,94 +138,21 @@ impl Cli {
                     }
                 }
                 GameState::WaitingForInput => {
-                    let processed_input = match input {
-                        "/north" => {
-                            let (x, y) = game.world.current_pos;
-                            let target_pos = (x, y + 1);
-                            if let Some(target_loc) = game.world.locations.get(&target_pos).cloned() {
-                                game.world.current_pos = target_pos;
-                                if let Some(loc) = game.world.locations.get_mut(&target_pos) {
-                                    loc.visited = true;
-                                }
-                                game.last_narrative = format!("You move north to {}.\n{}", target_loc.name, target_loc.description);
-                                game.log("Quick move north");
-                                if let Some(path) = &game.current_save_path {
-                                    let _ = game.save_manager.save_game(path, &game.world);
-                                }
-                                None
-                            } else {
-                                Some("go north".to_string())
-                            }
+                    // Convert CLI commands to Command enum - same logic as TUI
+                    let command = if let Ok(num) = input.parse::<usize>() {
+                        Command::SelectOption(num)
+                    } else {
+                        match input {
+                            "/north" => Command::MoveNorth,
+                            "/south" => Command::MoveSouth,
+                            "/east" => Command::MoveEast,
+                            "/west" => Command::MoveWest,
+                            _ => Command::TextInput(input.to_string()),
                         }
-                        "/south" => {
-                            let (x, y) = game.world.current_pos;
-                            let target_pos = (x, y - 1);
-                            if let Some(target_loc) = game.world.locations.get(&target_pos).cloned() {
-                                game.world.current_pos = target_pos;
-                                if let Some(loc) = game.world.locations.get_mut(&target_pos) {
-                                    loc.visited = true;
-                                }
-                                game.last_narrative = format!("You move south to {}.\n{}", target_loc.name, target_loc.description);
-                                game.log("Quick move south");
-                                if let Some(path) = &game.current_save_path {
-                                    let _ = game.save_manager.save_game(path, &game.world);
-                                }
-                                None
-                            } else {
-                                Some("go south".to_string())
-                            }
-                        }
-                        "/east" => {
-                            let (x, y) = game.world.current_pos;
-                            let target_pos = (x + 1, y);
-                            if let Some(target_loc) = game.world.locations.get(&target_pos).cloned() {
-                                game.world.current_pos = target_pos;
-                                if let Some(loc) = game.world.locations.get_mut(&target_pos) {
-                                    loc.visited = true;
-                                }
-                                game.last_narrative = format!("You move east to {}.\n{}", target_loc.name, target_loc.description);
-                                game.log("Quick move east");
-                                if let Some(path) = &game.current_save_path {
-                                    let _ = game.save_manager.save_game(path, &game.world);
-                                }
-                                None
-                            } else {
-                                Some("go east".to_string())
-                            }
-                        }
-                        "/west" => {
-                            let (x, y) = game.world.current_pos;
-                            let target_pos = (x - 1, y);
-                            if let Some(target_loc) = game.world.locations.get(&target_pos).cloned() {
-                                game.world.current_pos = target_pos;
-                                if let Some(loc) = game.world.locations.get_mut(&target_pos) {
-                                    loc.visited = true;
-                                }
-                                game.last_narrative = format!("You move west to {}.\n{}", target_loc.name, target_loc.description);
-                                game.log("Quick move west");
-                                if let Some(path) = &game.current_save_path {
-                                    let _ = game.save_manager.save_game(path, &game.world);
-                                }
-                                None
-                            } else {
-                                Some("go west".to_string())
-                            }
-                        }
-                        num if num.parse::<usize>().is_ok() => {
-                            let idx: usize = num.parse()?;
-                            if idx > 0 && idx <= game.current_options.len() {
-                                Some(game.current_options[idx - 1].clone())
-                            } else {
-                                Some(input.to_string())
-                            }
-                        }
-                        _ => Some(input.to_string()),
                     };
 
-                    if let Some(cmd) = processed_input {
-                        if let Err(e) = game.process_input(&cmd).await {
-                            println!("Error processing input: {}", e);
-                        }
+                    if let Err(e) = game.process_command(command).await {
+                        println!("Error processing input: {}", e);
                     }
                 }
                 _ => {

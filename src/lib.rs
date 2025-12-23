@@ -9,6 +9,7 @@ pub mod save;
 pub mod parsing;
 pub mod tools;
 pub mod agent;
+pub mod commands;
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;

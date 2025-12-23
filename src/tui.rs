@@ -1,4 +1,5 @@
 use crate::game::{Game, GameState};
+use crate::commands::Command;
 use anyhow::Result;
 use ratatui::{
     prelude::*,
@@ -55,174 +56,67 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
                         // Handle quit key first, before any state checks
                         if key.code == KeyCode::Esc {
                             if game.state == GameState::NamingWorld {
-                                game.process_input("back").await?;
+                                game.process_command(Command::Back).await?;
                                 self.input_buffer.clear();
                             } else {
                                 return Ok(());
                             }
                         }
-                        
-                        match key.code {
-                            KeyCode::Enter => {
-                                if game.state == GameState::SplashScreen {
+
+                        // Build command or handle buffer
+                        if game.state == GameState::NamingWorld {
+                            let command = match key.code {
+                                KeyCode::Enter => Command::Enter,
+                                KeyCode::Backspace => Command::Backspace,
+                                KeyCode::Char(c) => Command::TextInput(c.to_string()),
+                                _ => return Ok(()),
+                            };
+                            game.process_command(command).await?;
+                        } else if game.state == GameState::SplashScreen {
+                            let command = match key.code {
+                                KeyCode::Enter => {
                                     if game.selected_save_index < game.save_list.len() {
-                                        game.process_input("load").await?;
+                                        Command::Load
                                     } else {
-                                        game.process_input("new").await?;
+                                        Command::New
                                     }
-                                } else if game.state == GameState::NamingWorld {
-                                    game.process_input("enter").await?;
-                                } else if !self.input_buffer.is_empty() {
-                                    let input = self.input_buffer.clone();
-                                    game.log(&format!("Enter pressed: '{}' (len: {}) state: {:?}", input, input.len(), game.state));
-                                    self.input_buffer.clear();
-                                    game.process_input(&input).await?;
                                 }
-                            },
-                            KeyCode::Char('c') => {
-                                if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
-                                    game.log("Ctrl+C pressed, quitting...");
-                                    return Ok(());
+                                KeyCode::Up => Command::Up,
+                                KeyCode::Down => Command::Down,
+                                KeyCode::Delete => Command::Delete,
+                                _ => return Ok(()),
+                            };
+                            game.process_command(command).await?;
+                        } else if game.state == GameState::WaitingForInput {
+                            match key.code {
+                                KeyCode::Enter => {
+                                    if !self.input_buffer.is_empty() {
+                                        let input = self.input_buffer.clone();
+                                        game.log(&format!("Enter pressed: '{}' (len: {})", input, input.len()));
+                                        self.input_buffer.clear();
+                                        game.process_command(Command::TextInput(input)).await?;
+                                    }
                                 }
-                                if game.state == GameState::SplashScreen {
-                                    // Allow navigation in splash screen
-                                } else if game.state == GameState::NamingWorld {
-                                    game.process_input("c").await?;
-                                } else if game.state == GameState::WaitingForInput {
-                                    self.input_buffer.push('c');
-                                } else {
-                                    game.log(&format!("Ignored char 'c' - state is {:?}", game.state));
-                                }
-                            },
-                            KeyCode::Char(c) => {
-                                if game.state == GameState::SplashScreen {
-                                    // Allow navigation in splash screen
-                                } else if game.state == GameState::NamingWorld {
-                                    game.process_input(&c.to_string()).await?;
-                                } else if game.state == GameState::WaitingForInput {
-                                    self.input_buffer.push(c);
-                                } else {
-                                    game.log(&format!("Ignored char '{}' - state is {:?}", c, game.state));
-                                }
-                            },
-                            KeyCode::Backspace => {
-                                if game.state == GameState::SplashScreen {
-                                    // Allow navigation in splash screen
-                                } else if game.state == GameState::NamingWorld {
-                                    game.process_input("backspace").await?;
-                                } else if game.state == GameState::WaitingForInput {
+                                KeyCode::Backspace => {
                                     self.input_buffer.pop();
-                                } else {
-                                    game.log(&format!("Ignored backspace - state is {:?}", game.state));
                                 }
-                            },
-                            KeyCode::Up => {
-                                if game.state == GameState::SplashScreen {
-                                    game.process_input("up").await?;
-                                } else if game.state == GameState::WaitingForInput {
-                                    let (x, y) = game.world.current_pos;
-                                    let target_pos = (x, y + 1);
-
-                                    if let Some(target_loc) = game.world.locations.get(&target_pos).cloned() {
-                                        game.world.current_pos = target_pos;
-                                        if let Some(loc) = game.world.locations.get_mut(&target_pos) {
-                                            loc.visited = true;
-                                        }
-                                        game.last_narrative = format!("You move north to {}.\n{}", target_loc.name, target_loc.description);
-                                        game.log("Quick move north");
-                                        if let Some(path) = &game.current_save_path {
-                                            let _ = game.save_manager.save_game(path, &game.world);
-                                        }
-                                    } else {
-                                        game.log("Cannot move north - area unexplored");
-                                        game.last_narrative = format!("The path north leads to unexplored territory. Type your action to explore.");
-                                    }
+                                KeyCode::Char(c) => {
+                                    self.input_buffer.push(c);
                                 }
-                            },
-                            KeyCode::Down => {
-                                if game.state == GameState::SplashScreen {
-                                    game.process_input("down").await?;
-                                } else if game.state == GameState::WaitingForInput {
-                                    let (x, y) = game.world.current_pos;
-                                    let target_pos = (x, y - 1);
-
-                                    if let Some(target_loc) = game.world.locations.get(&target_pos).cloned() {
-                                        game.world.current_pos = target_pos;
-                                        if let Some(loc) = game.world.locations.get_mut(&target_pos) {
-                                            loc.visited = true;
-                                        }
-                                        game.last_narrative = format!("You move south to {}.\n{}", target_loc.name, target_loc.description);
-                                        game.log("Quick move south");
-                                        if let Some(path) = &game.current_save_path {
-                                            let _ = game.save_manager.save_game(path, &game.world);
-                                        }
-                                    } else {
-                                        game.log("Cannot move south - area unexplored");
-                                        game.last_narrative = format!("The path south leads to unexplored territory. Type your action to explore.");
-                                    }
+                                KeyCode::Up => {
+                                    game.process_command(Command::MoveNorth).await?;
                                 }
-                            },
-                            KeyCode::Left => {
-                                if game.state == GameState::WaitingForInput {
-                                    let (x, y) = game.world.current_pos;
-                                    let target_pos = (x - 1, y);
-
-                                    if let Some(target_loc) = game.world.locations.get(&target_pos).cloned() {
-                                        game.world.current_pos = target_pos;
-                                        if let Some(loc) = game.world.locations.get_mut(&target_pos) {
-                                            loc.visited = true;
-                                        }
-                                        game.last_narrative = format!("You move west to {}.\n{}", target_loc.name, target_loc.description);
-                                        game.log("Quick move west");
-                                        if let Some(path) = &game.current_save_path {
-                                            let _ = game.save_manager.save_game(path, &game.world);
-                                        }
-                                    } else {
-                                        game.log("Cannot move west - area unexplored");
-                                        game.last_narrative = format!("The path west leads to unexplored territory. Type your action to explore.");
-                                    }
+                                KeyCode::Down => {
+                                    game.process_command(Command::MoveSouth).await?;
                                 }
-                            },
-                            KeyCode::Right => {
-                                if game.state == GameState::WaitingForInput {
-                                    let (x, y) = game.world.current_pos;
-                                    let target_pos = (x + 1, y);
-
-                                    if let Some(target_loc) = game.world.locations.get(&target_pos).cloned() {
-                                        game.world.current_pos = target_pos;
-                                        if let Some(loc) = game.world.locations.get_mut(&target_pos) {
-                                            loc.visited = true;
-                                        }
-                                        game.last_narrative = format!("You move east to {}.\n{}", target_loc.name, target_loc.description);
-                                        game.log("Quick move east");
-                                        if let Some(path) = &game.current_save_path {
-                                            let _ = game.save_manager.save_game(path, &game.world);
-                                        }
-                                    } else {
-                                        game.log("Cannot move east - area unexplored");
-                                        game.last_narrative = format!("The path east leads to unexplored territory. Type your action to explore.");
-                                    }
+                                KeyCode::Left => {
+                                    game.process_command(Command::MoveWest).await?;
                                 }
-                            },
-                            KeyCode::Esc => {
-                                return Ok(());
-                            },
-                            KeyCode::Delete => {
-                                if game.state == GameState::SplashScreen && !game.save_list.is_empty() {
-                                    let save = &game.save_list[game.selected_save_index];
-                                    if let Err(e) = game.save_manager.delete_save(&save.filename) {
-                                        game.log(&format!("Failed to delete save: {}", e));
-                                    } else {
-                                        game.log(&format!("Deleted save: {}", save.filename));
-                                        // Refresh save list
-                                        game.save_list = game.save_manager.list_saves().unwrap_or_default();
-                                        if game.selected_save_index >= game.save_list.len() && game.selected_save_index > 0 {
-                                            game.selected_save_index = game.save_list.len() - 1;
-                                        }
-                                    }
+                                KeyCode::Right => {
+                                    game.process_command(Command::MoveEast).await?;
                                 }
-                            },
-                            _ => {}
+                                _ => {}
+                            }
                         }
                     }
                 }
