@@ -2,6 +2,7 @@ pub mod model;
 pub mod llm;
 pub mod game;
 pub mod tui;
+pub mod cli;
 pub mod image;
 pub mod save;
 
@@ -12,4 +13,5 @@ pub mod wasm;
 pub use game::Game;
 pub use llm::LlmClient;
 pub use tui::Tui;
+pub use cli::Cli;
 pub use save::SaveManager;
