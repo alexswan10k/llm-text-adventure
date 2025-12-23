@@ -1,7 +1,8 @@
 use crate::model::{WorldState, WorldUpdate, Location, ItemState};
 use crate::llm::LlmClient;
 use crate::save::{SaveManager, SaveInfo};
-use anyhow::{Result, Context};
+use crate::parsing::ActionParser;
+use anyhow::{anyhow, Result, Context};
 use std::collections::HashMap;
 
 use std::time::Duration;
@@ -468,6 +469,11 @@ Rules:
         let action_str = action_str.trim();
 
         self.log(&format!("Parsing action: '{}'", action_str));
+        
+        // Check for obviously truncated actions
+        if action_str.len() < 10 {
+            return Err(anyhow!("Action too short: '{}'", action_str));
+        }
 
         if action_str.starts_with("MoveTo(") {
             // Parse MoveTo(x, y) - handle various formats
@@ -575,11 +581,21 @@ Rules:
                     self.world.locations.insert(pos, loc);
                 }
             }
-        } else if action_str.starts_with("CreateItem(") && action_str.ends_with(")") {
-            let json_str = &action_str[11..action_str.len()-1];
-            let item: crate::model::Item = serde_json::from_str(json_str)
-                .context(format!("Failed to parse CreateItem: {}", json_str))?;
-            self.world.items.insert(item.id.clone(), item);
+        } else if action_str.starts_with("CreateItem(") {
+            // Use the new ActionParser for CreateItem validation
+            let mut parser = ActionParser::new();
+            match parser.parse_action(action_str) {
+                Ok(crate::parsing::ParsedAction::CreateItem(item)) => {
+                    self.log(&format!("Successfully parsed CreateItem: {}", item.id));
+                    self.world.items.insert(item.id.clone(), item);
+                }
+                Ok(_) => {
+                    return Err(anyhow!("ActionParser returned wrong action type for CreateItem"));
+                }
+                Err(e) => {
+                    return Err(anyhow!("CreateItem validation failed: {}", e));
+                }
+            }
         } else if action_str.starts_with("AddItemToInventory(") && action_str.ends_with(")") {
             let item_id = &action_str[20..action_str.len()-1];
             let item_id = item_id.trim_matches('"');

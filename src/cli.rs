@@ -28,7 +28,7 @@ impl Cli {
     /// - Any text - Pass to game.process_input() for LLM interpretation
     ///
     /// ## State Output Format
-    /// ```
+    /// ```text
     /// ========================================
     /// WORLD STATE
     /// ========================================

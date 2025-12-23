@@ -5,6 +5,7 @@ pub mod tui;
 pub mod cli;
 pub mod image;
 pub mod save;
+pub mod parsing;
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
