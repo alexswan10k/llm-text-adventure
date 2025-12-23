@@ -6,9 +6,13 @@ The game content is generated at runtime by a Local LLM (e.g., LM Studio), maint
 ## Features
 
 - **Infinite World**: Locations and narratives generated on the fly by LLM.
-- **Persistent State**: World, actors, and items are saved to JSON.
+- **Coordinate-Based Map**: Grid-based world with `(x, y)` coordinates for spatial consistency.
+- **Quick Movement**: Arrow keys for instant movement to explored adjacent cells.
+- **Fog-of-War Map**: Only reveals visited and nearby locations on the ASCII map.
+- **Enhanced LLM Context**: Includes adjacent cell information for better spatial coherence.
+- **Persistent State**: World, actors, and items are saved to JSON with auto-save.
 - **Splash Screen**: Manage multiple save files.
-- **TUI Interface**: Split layout for visuals, narrative, and input.
+- **TUI Interface**: Split layout for visuals, narrative, and input with styled map rendering.
 - **WASM Support**: Play in the browser.
 
 ## Quick Start
@@ -49,5 +53,6 @@ cargo run
     - `Up`/`Down`: Select save file.
     - `Enter`: Load save or Start New Game.
 - **In Game**:
-    - Type action (e.g., "look around", "go north", "take sword") and press `Enter`.
+    - **Arrow Keys**: Quick move to explored adjacent cells (North/South/East/West).
+    - **Text Input**: Type action (e.g., "look around", "go north", "take sword") and press `Enter` for LLM-driven actions.
     - `Esc`: Quit.
