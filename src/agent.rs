@@ -4,9 +4,6 @@ use crate::llm::LlmClient;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-/// No observation tools needed - all tools are batch executed
-const OBSERVATION_TOOLS: &[&str] = &[];
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmMessage {
     pub role: String,
@@ -34,8 +31,8 @@ pub struct AgentResponse {
 pub struct Agent {
     llm_client: LlmClient,
     world: WorldState,
-    max_iterations: usize,
     overall_timeout_seconds: u64,
+    turn_narrative: Option<String>,
     debug_log: Vec<String>,
 }
 
@@ -44,8 +41,8 @@ impl Agent {
         Self {
             llm_client,
             world,
-            max_iterations: 3,
             overall_timeout_seconds: 60,
+            turn_narrative: None,
             debug_log: Vec::new(),
         }
     }
@@ -76,134 +73,103 @@ impl Agent {
             self.build_user_message(user_input),
         ];
 
-        let mut narrative = String::new();
-        let mut iteration = 0;
-        let mut last_tool_name: Option<String> = None;
+        self.turn_narrative = None;
 
-        loop {
-            iteration += 1;
-
-            if start_time.elapsed() > overall_timeout {
-                self.log(&format!("Overall timeout reached ({}s)", self.overall_timeout_seconds));
-                return Ok(AgentResponse {
-                    narrative: format!("{} [Timeout: The game took too long to respond]", narrative),
-                    suggested_actions: self.extract_suggested_actions(&narrative),
-                });
-            }
-
-            self.log(&format!("Agent iteration {}", iteration));
-
-            if iteration > self.max_iterations {
-                self.log("Max iterations reached, breaking");
-                break;
-            }
-
-            // Update system message with current world state
-            messages[0] = self.build_system_message();
-
-            let tools = get_tool_definitions();
-            let tool_schemas: Vec<serde_json::Value> = tools
-                .iter()
-                .map(|t| {
-                    serde_json::json!({
-                        "type": "function",
-                        "function": {
-                            "name": t.name,
-                            "description": t.description,
-                            "parameters": t.parameters
-                        }
-                    })
+        let tools = get_tool_definitions();
+        let tool_schemas: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters
+                    }
                 })
-                .collect();
+            })
+            .collect();
 
-            let request = LlmRequest {
-                model: self.llm_client.model_name.clone(),
-                messages: messages.clone(),
-                tools: Some(tool_schemas),
-                tool_choice: None,
-                temperature: 0.7,
-                max_tokens: 4096,
-            };
+        let request = LlmRequest {
+            model: self.llm_client.model_name.clone(),
+            messages: messages.clone(),
+            tools: Some(tool_schemas),
+            tool_choice: None,
+            temperature: 0.7,
+            max_tokens: 4096,
+        };
 
-            let response = self.llm_client.send_chat_request(&request).await?;
-            let response_content = response.get("content").and_then(|c| c.as_str());
-            let response_tool_calls: Option<Vec<ToolCall>> = response
-                .get("tool_calls")
-                .and_then(|tc| serde_json::from_value(tc.clone()).ok());
+        if start_time.elapsed() > overall_timeout {
+            self.log(&format!("Timeout reached ({}s)", self.overall_timeout_seconds));
+            return Ok(AgentResponse {
+                narrative: "[Timeout: The game took too long to respond]".to_string(),
+                suggested_actions: vec!["look around".to_string()],
+            });
+        }
 
-            if let Some(content) = response_content {
-                if !content.is_empty() {
-                    self.log(&format!("Received narrative content ({} chars)", content.len()));
-                    if narrative.is_empty() {
-                        narrative = content.to_string();
-                    } else {
-                        narrative.push_str("\n\n");
-                        narrative.push_str(content);
-                    }
-                }
-            }
+        let response = self.llm_client.send_chat_request(&request).await?;
+        let response_content = response.get("content").and_then(|c| c.as_str());
+        let response_tool_calls: Option<Vec<ToolCall>> = response
+            .get("tool_calls")
+            .and_then(|tc| serde_json::from_value(tc.clone()).ok());
 
-            let (tool_calls_needs_llm, _has_tools) = match (&response_tool_calls, response_content) {
-                (None, None) => {
-                    self.log("No content, no tool calls - LLM didn't understand");
-                    (false, false)
-                },
-                (None, Some(_)) => {
-                    self.log("No tool calls but we have content - done");
-                    (false, false)
-                },
-                (Some(tool_calls), content) => {
-                    let has_observation_tool = tool_calls.iter()
-                        .any(|tc| OBSERVATION_TOOLS.contains(&tc.function.name.as_str()));
-
-                    let first_tool_name = tool_calls.get(0).map(|tc| tc.function.name.clone());
-
-                    if let (Some(last), Some(current)) = (&last_tool_name, &first_tool_name) {
-                        if last == current && has_observation_tool {
-                            self.log(&format!("Detected repeated observation tool call '{}'. Breaking to prevent loop.", last));
-                            return Ok(AgentResponse {
-                                narrative: format!("{} [Agent stopped due to repeated tool calls]", narrative),
-                                suggested_actions: self.extract_suggested_actions(&narrative),
-                            });
-                        }
-                    }
-
-                    if has_observation_tool {
-                        self.log(&format!("Got {} tool call(s) with observation tool - will loop", tool_calls.len()));
-                    } else {
-                        self.log(&format!("Got {} batch tool call(s) - will not loop", tool_calls.len()));
-                    }
-
-                    for tool_call in tool_calls {
-                        let result = self.execute_tool_call(tool_call)?;
-                        let tool_result_msg = LlmMessage {
-                            role: "tool".to_string(),
-                            content: Some(result.content.clone()),
-                            tool_calls: None,
-                            tool_call_id: Some(tool_call.id.clone()),
-                        };
-                        messages.push(tool_result_msg);
-                    }
-
-                    let assistant_msg = LlmMessage {
-                        role: "assistant".to_string(),
-                        content: content.map(|c| c.to_string()),
-                        tool_calls: Some(tool_calls.clone()),
-                        tool_call_id: None,
-                    };
-                    messages.push(assistant_msg);
-
-                    last_tool_name = first_tool_name;
-                    (has_observation_tool, true)
-                },
-            };
-
-            if !tool_calls_needs_llm {
-                self.log("No more LLM calls needed, ending agent loop");
-                break;
+        if let Some(ref tool_calls) = response_tool_calls {
+            self.log(&format!("Got {} tool call(s)", tool_calls.len()));
+            for tool_call in tool_calls {
+                self.log(&format!("  - {}", tool_call.function.name));
+                let _ = self.execute_tool_call(tool_call).await;
             }
         }
 
+        if let Some(turn_narrative) = &self.turn_narrative {
+            let narrative = turn_narrative.clone();
+            self.log(&format!("Narrative length: {} chars", narrative.len()));
+            let suggested_actions = self.extract_suggested_actions(&narrative);
+            return Ok(AgentResponse {
+                narrative,
+                suggested_actions,
+            });
+        }
+
+        if response_tool_calls.is_some() && response_content.is_none() {
+            messages.push(LlmMessage {
+                role: "assistant".to_string(),
+                content: None,
+                tool_calls: response_tool_calls.clone(),
+                tool_call_id: None,
+            });
+
+            messages.push(LlmMessage {
+                role: "user".to_string(),
+                content: Some("Describe what just happened in 2-3 sentences. Do not call any tools, just provide narrative.".to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            });
+
+            let narrative_request = LlmRequest {
+                model: self.llm_client.model_name.clone(),
+                messages: messages.clone(),
+                tools: None,
+                tool_choice: None,
+                temperature: 0.7,
+                max_tokens: 1000,
+            };
+
+            if let Ok(narrative_response) = self.llm_client.send_chat_request(&narrative_request).await {
+                if let Some(content) = narrative_response.get("content").and_then(|c| c.as_str()) {
+                    let narrative = content.to_string();
+                    self.log(&format!("Narrative length: {} chars", narrative.len()));
+                    let suggested_actions = self.extract_suggested_actions(&narrative);
+                    return Ok(AgentResponse {
+                        narrative,
+                        suggested_actions,
+                    });
+                }
+            }
+        }
+
+        let narrative = response_content.map(|c| c.to_string()).unwrap_or_default();
+        self.log(&format!("Narrative length: {} chars", narrative.len()));
         let suggested_actions = self.extract_suggested_actions(&narrative);
         Ok(AgentResponse {
             narrative,
@@ -238,25 +204,26 @@ impl Agent {
 
         let context = format!(
             r#"You are Dungeon Master for a text adventure game.
-Current Location: {}
-Description: {}
-Items here: {:?}
-Player Inventory: {:?}
-Player Money: {}
+ Current Location: {} at ({}, {})
+ Description: {}
+ Items here: {:?}
+ Player Inventory: {:?}
+ Player Money: {}
 
-Adjacent Areas: {}
+ Adjacent Areas: {}
 
-RULES:
-1. You can call MULTIPLE tools in ONE response.
-2. Batch up related actions (create + add) in a single response.
-3. For non-movement actions: Focus on creating narrative, items, and interactions within the current location.
-4. Provide natural, engaging narrative descriptions.
-5. End your response with 3-5 suggested actions for player (as narrative text).
-6. NEVER generate JSON text - use tool calls instead.
-7. IMPORTANT: For exploration questions like "what's around me", "look around", "examine": Provide detailed narrative focusing on current location. Do NOT create adjacent locations - player must explicitly move to explore those.
+ RULES:
+ 1. You can call MULTIPLE tools in ONE response.
+ 2. When calling tools: The narrative you generate should describe what happens AFTER tools execute.
+ 3. For movement: Use move_to(direction). New tiles are auto-generated if needed.
+ 4. For describing location: Use update_location_description(text) to permanently change location's description.
+ 5. For responding to player: Use generate_turn_narrative(text) if you want full control, or let the system generate narrative after your tools execute.
+ 6. If you call tools WITHOUT using generate_turn_narrative or adding narrative content, the system will ask you to describe what happened with the updated world state.
+ 7. End your response with 3-5 suggested actions (in the LLM content, not as a tool).
+ 8. NEVER generate JSON text - use tool calls instead.
 
-Available tools: create_item, add_item_to_inventory, remove_item_from_inventory, add_item_to_location, remove_item_from_location, use_item, equip_item, unequip_item, combine_items, break_item, add_item_to_container, remove_item_to_container"#,
-            current_loc.name,
+ Available tools: move_to, update_location_description, generate_turn_narrative, create_item, add_item_to_inventory, remove_item_from_inventory, add_item_to_location, remove_item_from_location, use_item, equip_item, unequip_item, combine_items, break_item, add_item_to_container, remove_item_to_container"#,
+            current_loc.name, x, y,
             current_loc.description,
             visible_items,
             player_inventory,
@@ -274,7 +241,7 @@ Available tools: create_item, add_item_to_inventory, remove_item_from_inventory,
 
     fn build_user_message(&self, user_input: &str) -> LlmMessage {
         let content = format!(
-            "User Action: {}\n\nLast Narrative:\n(See system message for current context)",
+            "Player Action: {}",
             user_input
         );
 
@@ -305,12 +272,15 @@ Available tools: create_item, add_item_to_inventory, remove_item_from_inventory,
             .join(", ")
     }
 
-    fn execute_tool_call(&mut self, tool_call: &ToolCall) -> Result<ToolResult> {
+    async fn execute_tool_call(&mut self, tool_call: &ToolCall) -> Result<ToolResult> {
         let ToolFunction { name, arguments } = &tool_call.function;
 
         self.log(&format!("Executing tool: {} with args: {}", name, arguments));
 
         let result = match name.as_str() {
+            "move_to" => self.execute_move_to(arguments).await?,
+            "update_location_description" => self.execute_update_location_description(arguments)?,
+            "generate_turn_narrative" => self.execute_generate_turn_narrative(arguments)?,
             "create_item" => self.execute_create_item(arguments)?,
             "add_item_to_inventory" => self.execute_add_item_to_inventory(arguments)?,
             "remove_item_from_inventory" => self.execute_remove_item_from_inventory(arguments)?,
@@ -322,7 +292,7 @@ Available tools: create_item, add_item_to_inventory, remove_item_from_inventory,
             "combine_items" => self.execute_combine_items(arguments)?,
             "break_item" => self.execute_break_item(arguments)?,
             "add_item_to_container" => self.execute_add_item_to_container(arguments)?,
-            "remove_item_from_container" => self.execute_remove_item_from_container(arguments)?,
+            "remove_item_to_container" => self.execute_remove_item_from_container(arguments)?,
             _ => return Err(anyhow::anyhow!("Unknown tool: {}", name)),
         };
 
@@ -548,6 +518,135 @@ Available tools: create_item, add_item_to_inventory, remove_item_from_inventory,
         Ok(format!("Removed {} from container {}", item_id, container_id))
     }
 
+    async fn execute_move_to(&mut self, arguments: &str) -> Result<String> {
+        let args: serde_json::Value = serde_json::from_str(arguments)?;
+        let direction = args["direction"].as_str().ok_or_else(|| anyhow::anyhow!("Missing direction"))?;
+
+        let (current_x, current_y) = self.world.current_pos;
+        let target_pos = match direction {
+            "north" => (current_x, current_y + 1),
+            "south" => (current_x, current_y - 1),
+            "east" => (current_x + 1, current_y),
+            "west" => (current_x - 1, current_y),
+            _ => return Err(anyhow::anyhow!("Invalid direction")),
+        };
+
+        let opposite = get_opposite_direction(direction);
+
+        if !self.world.locations.contains_key(&target_pos) {
+            self.log(&format!("Generating new location at ({}, {}) heading {}", target_pos.0, target_pos.1, direction));
+
+            let current_loc = self.world.locations.get(&self.world.current_pos)
+                .ok_or_else(|| anyhow::anyhow!("Current location not found"))?;
+
+            let prompt = format!(
+                r#"Current Location: {} at ({}, {})
+Description: {}
+
+The player is heading {} toward coordinates ({}, {}).
+This grid cell is currently EMPTY and needs to be generated.
+
+Create a new location at ({}, {}) that fits thematically with current location.
+IMPORTANT: All exits must be null (blocked). The game will create actual exit connections automatically.
+
+Return ONLY a valid JSON object:
+{{
+  "name": "Location name",
+  "description": "Description of what the player sees",
+  "image_prompt": "Visual description for generating an image",
+  "exits": {{"north": null, "south": null, "east": null, "west": null}},
+  "items": [],
+  "actors": []
+}}
+
+CRITICAL:
+- exits MUST be null objects (blocked), NOT strings or booleans
+- items MUST be an empty array []
+- actors MUST be an empty array []
+- NO narrative text, NO extra commentary
+
+Just the JSON. Nothing else."#,
+                current_loc.name,
+                current_x,
+                current_y,
+                current_loc.description,
+                direction, target_pos.0, target_pos.1,
+                target_pos.0, target_pos.1
+            );
+
+            let system_prompt = "You are a world generator for a text adventure game. Create interesting, thematically consistent locations. You MUST output valid JSON only.";
+
+            match self.llm_client.generate_location(system_prompt, &prompt).await {
+                Ok(mut location) => {
+                    location.visited = true;
+                    self.world.locations.insert(target_pos, location.clone());
+                    self.log(&format!("Created location at ({}, {}): {}", target_pos.0, target_pos.1, location.name));
+
+                    if let Some(current_loc) = self.world.locations.get_mut(&self.world.current_pos) {
+                        current_loc.exits.insert(direction.to_string(), Some(target_pos));
+                    }
+                    if let Some(new_loc) = self.world.locations.get_mut(&target_pos) {
+                        new_loc.exits.insert(opposite, Some(self.world.current_pos));
+                    }
+                }
+                Err(e) => {
+                    self.log(&format!("Failed to generate location: {}", e));
+
+                    let fallback_loc = Location {
+                        name: format!("Mysterious area ({}, {})", target_pos.0, target_pos.1),
+                        description: "A mysterious place that appeared suddenly.".to_string(),
+                        items: vec![],
+                        actors: vec![],
+                        exits: std::collections::HashMap::new(),
+                        cached_image_path: None,
+                        image_prompt: "A mysterious location with undefined characteristics.".to_string(),
+                        visited: true,
+                    };
+
+                    self.world.locations.insert(target_pos, fallback_loc.clone());
+                    self.log(&format!("Used fallback location at ({}, {})", target_pos.0, target_pos.1));
+
+                    if let Some(current_loc) = self.world.locations.get_mut(&self.world.current_pos) {
+                        current_loc.exits.insert(direction.to_string(), Some(target_pos));
+                    }
+                    if let Some(new_loc) = self.world.locations.get_mut(&target_pos) {
+                        new_loc.exits.insert(opposite, Some(self.world.current_pos));
+                    }
+                }
+            }
+        }
+
+        self.world.current_pos = target_pos;
+        if let Some(loc) = self.world.locations.get_mut(&target_pos) {
+            loc.visited = true;
+        }
+
+        let loc_name = self.world.locations.get(&target_pos)
+            .map(|l| l.name.as_str())
+            .unwrap_or("Unknown");
+        Ok(format!("Moved {} to ({}, {}) - {}", direction, target_pos.0, target_pos.1, loc_name))
+    }
+
+    fn execute_update_location_description(&mut self, arguments: &str) -> Result<String> {
+        let args: serde_json::Value = serde_json::from_str(arguments)?;
+        let text = args["text"].as_str().ok_or_else(|| anyhow::anyhow!("Missing text"))?;
+
+        if let Some(loc) = self.world.locations.get_mut(&self.world.current_pos) {
+            loc.description = text.to_string();
+            Ok("Location description updated".to_string())
+        } else {
+            Err(anyhow::anyhow!("Current location not found"))
+        }
+    }
+
+    fn execute_generate_turn_narrative(&mut self, arguments: &str) -> Result<String> {
+        let args: serde_json::Value = serde_json::from_str(arguments)?;
+        let text = args["text"].as_str().ok_or_else(|| anyhow::anyhow!("Missing text"))?;
+
+        self.turn_narrative = Some(text.to_string());
+        Ok("Turn narrative generated".to_string())
+    }
+
     fn extract_suggested_actions(&self, narrative: &str) -> Vec<String> {
         let mut actions = Vec::new();
         for line in narrative.lines() {
@@ -570,6 +669,16 @@ Available tools: create_item, add_item_to_inventory, remove_item_from_inventory,
     }
 }
 
+fn get_opposite_direction(direction: &str) -> String {
+    match direction {
+        "north" => "south".to_string(),
+        "south" => "north".to_string(),
+        "east" => "west".to_string(),
+        "west" => "east".to_string(),
+        _ => direction.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -579,7 +688,6 @@ mod tests {
         let llm_client = LlmClient::new("http://localhost:11434".to_string(), "test".to_string());
         let world = WorldState::new();
         let agent = Agent::new(llm_client, world);
-        assert_eq!(agent.max_iterations, 3);
         assert_eq!(agent.overall_timeout_seconds, 60);
     }
 
@@ -608,13 +716,48 @@ mod tests {
         assert!(actions.len() <= 5);
     }
 
-    // #[test]
-    // fn test_batch_vs_observation_tools() {
-    //     assert!(BATCH_TOOLS.contains(&"create_location"));
-    //     assert!(BATCH_TOOLS.contains(&"create_item"));
-    //     assert!(BATCH_TOOLS.contains(&"move_to"));
+    #[test]
+    fn test_get_opposite_direction() {
+        assert_eq!(get_opposite_direction("north"), "south");
+        assert_eq!(get_opposite_direction("south"), "north");
+        assert_eq!(get_opposite_direction("east"), "west");
+        assert_eq!(get_opposite_direction("west"), "east");
+        assert_eq!(get_opposite_direction("other"), "other");
+    }
 
-    //     assert!(!OBSERVATION_TOOLS.contains(&"move_to"));
-    //     assert!(!OBSERVATION_TOOLS.contains(&"create_item"));
-    // }
+    #[tokio::test]
+    async fn test_execute_update_location_description() {
+        let llm_client = LlmClient::new("http://localhost:11434".to_string(), "test".to_string());
+        let mut world = WorldState::new();
+        world.locations.insert((0, 0), Location {
+            name: "Test Location".to_string(),
+            description: "Old description".to_string(),
+            items: vec![],
+            actors: vec![],
+            exits: std::collections::HashMap::new(),
+            cached_image_path: None,
+            image_prompt: "Test".to_string(),
+            visited: true,
+        });
+
+        let mut agent = Agent::new(llm_client, world);
+        let result = agent.execute_update_location_description(r#"{"text":"New description"}"#).unwrap();
+        assert!(result.contains("updated"));
+
+        assert_eq!(
+            agent.world.locations.get(&(0, 0)).unwrap().description,
+            "New description"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_generate_turn_narrative() {
+        let llm_client = LlmClient::new("http://localhost:11434".to_string(), "test".to_string());
+        let world = WorldState::new();
+        let mut agent = Agent::new(llm_client, world);
+
+        let result = agent.execute_generate_turn_narrative(r#"{"text":"You see a treasure chest."}"#).unwrap();
+        assert!(result.contains("generated"));
+        assert_eq!(agent.turn_narrative, Some("You see a treasure chest.".to_string()));
+    }
 }

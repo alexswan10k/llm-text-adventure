@@ -227,7 +227,16 @@ impl Cli {
         println!("Money: {}", game.world.player.money);
 
         println!("\n--- Narrative ---");
-        println!("{}", game.last_narrative);
+        let turn_narrative = game.last_narrative.clone();
+        let location_desc = game.world.locations.get(&game.world.current_pos)
+            .map(|l| l.description.clone())
+            .unwrap_or_else(|| "Unknown location.".to_string());
+
+        if turn_narrative.is_empty() {
+            println!("{}", location_desc);
+        } else {
+            println!("{}\n\n{}", turn_narrative, location_desc);
+        }
 
         if !game.current_options.is_empty() {
             println!("\n--- Suggested Actions ---");

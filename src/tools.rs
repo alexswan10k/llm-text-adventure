@@ -31,6 +31,42 @@ pub struct ToolDefinition {
 pub fn get_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
+            name: "move_to",
+            description: "Move player in direction (north/south/east/west). Auto-generates new locations if needed.",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "direction": {
+                        "type": "string",
+                        "enum": ["north", "south", "east", "west"]
+                    }
+                },
+                "required": ["direction"]
+            }),
+        },
+        ToolDefinition {
+            name: "update_location_description",
+            description: "Update the current location's description with new text",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"}
+                },
+                "required": ["text"]
+            }),
+        },
+        ToolDefinition {
+            name: "generate_turn_narrative",
+            description: "Generate the narrative response for the current turn (transient, not stored per location)",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"}
+                },
+                "required": ["text"]
+            }),
+        },
+        ToolDefinition {
             name: "create_item",
             description: "Create a new item in the world",
             parameters: serde_json::json!({
@@ -227,7 +263,7 @@ mod tests {
     fn test_tool_definitions_exist() {
         let tools = get_tool_definitions();
         assert!(!tools.is_empty());
-        assert_eq!(tools.len(), 12);
+        assert_eq!(tools.len(), 15);
     }
 
     #[test]

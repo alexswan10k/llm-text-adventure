@@ -298,8 +298,17 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
 
         // Narrative Area
         let narrative_block = Block::default().borders(Borders::ALL).title("Narrative");
-        let mut narrative_text = game.last_narrative.clone();
-        
+        let turn_narrative = game.last_narrative.clone();
+        let location_desc = game.world.locations.get(&game.world.current_pos)
+            .map(|l| l.description.clone())
+            .unwrap_or_else(|| "Unknown location.".to_string());
+
+        let mut narrative_text = if turn_narrative.is_empty() {
+            location_desc
+        } else {
+            format!("{}\n\n{}", turn_narrative, location_desc)
+        };
+
         // Append options
         if !game.current_options.is_empty() {
             narrative_text.push_str("\n\nSuggested Actions:\n");
