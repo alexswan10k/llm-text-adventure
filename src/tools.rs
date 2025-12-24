@@ -31,45 +31,6 @@ pub struct ToolDefinition {
 pub fn get_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
-            name: "move_to",
-            description: "Move the player to a specific coordinate on the map",
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "x": {"type": "integer", "description": "X coordinate on the grid"},
-                    "y": {"type": "integer", "description": "Y coordinate on the grid"}
-                },
-                "required": ["x", "y"]
-            }),
-        },
-        ToolDefinition {
-            name: "create_location",
-            description: "Create a new location at specific coordinates",
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "x": {"type": "integer"},
-                    "y": {"type": "integer"},
-                    "name": {"type": "string"},
-                    "description": {"type": "string"},
-                    "image_prompt": {"type": "string"},
-                    "exits": {
-                        "type": "object",
-                        "description": "Map of direction to [x, y] coordinates or null",
-                        "properties": {
-                            "north": {"anyOf": [{"type": "array", "items": {"type": "integer"}}, {"type": "null"}]},
-                            "south": {"anyOf": [{"type": "array", "items": {"type": "integer"}}, {"type": "null"}]},
-                            "east": {"anyOf": [{"type": "array", "items": {"type": "integer"}}, {"type": "null"}]},
-                            "west": {"anyOf": [{"type": "array", "items": {"type": "integer"}}, {"type": "null"}]}
-                        }
-                    },
-                    "items": {"type": "array", "items": {"type": "string"}, "default": []},
-                    "actors": {"type": "array", "items": {"type": "string"}, "default": []}
-                },
-                "required": ["x", "y", "name", "description", "image_prompt"]
-            }),
-        },
-        ToolDefinition {
             name: "create_item",
             description: "Create a new item in the world",
             parameters: serde_json::json!({
@@ -154,28 +115,24 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "add_item_to_location",
-            description: "Add an item to a specific location",
+            description: "Add an item to the current location",
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "x": {"type": "integer"},
-                    "y": {"type": "integer"},
                     "item_id": {"type": "string"}
                 },
-                "required": ["x", "y", "item_id"]
+                "required": ["item_id"]
             }),
         },
         ToolDefinition {
             name: "remove_item_from_location",
-            description: "Remove an item from a specific location",
+            description: "Remove an item from the current location",
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "x": {"type": "integer"},
-                    "y": {"type": "integer"},
                     "item_id": {"type": "string"}
                 },
-                "required": ["x", "y", "item_id"]
+                "required": ["item_id"]
             }),
         },
         ToolDefinition {
@@ -270,19 +227,7 @@ mod tests {
     fn test_tool_definitions_exist() {
         let tools = get_tool_definitions();
         assert!(!tools.is_empty());
-        assert_eq!(tools.len(), 14);
-    }
-
-    #[test]
-    fn test_move_to_tool_schema() {
-        let tools = get_tool_definitions();
-        let move_to = tools.iter().find(|t| t.name == "move_to").unwrap();
-        assert_eq!(move_to.name, "move_to");
-        let params = &move_to.parameters;
-        assert_eq!(params["type"], "object");
-        assert!(params["properties"]["x"].is_object());
-        assert!(params["properties"]["y"].is_object());
-        assert!(params["required"].is_array());
+        assert_eq!(tools.len(), 12);
     }
 
     #[test]

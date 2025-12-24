@@ -238,27 +238,25 @@ impl Agent {
 
         let context = format!(
             r#"You are Dungeon Master for a text adventure game.
-Current Location: {} at ({}, {})
+Current Location: {}
 Description: {}
 Items here: {:?}
 Player Inventory: {:?}
 Player Money: {}
 
-Adjacent Locations:
-{}
+Adjacent Areas: {}
 
 RULES:
-1. Use tools to modify world state based on user actions.
-2. You can call MULTIPLE tools in ONE response.
-3. Batch up related actions (create + add) in a single response.
-4. For movement: Use create_location THEN move_to in the same response.
-5. Coordinate system: north increases y by 1, south decreases y by 1, east increases x by 1, west decreases x by 1.
-6. Provide natural, engaging narrative descriptions.
-7. End your response with 3-5 suggested actions for player (as narrative text).
-8. NEVER generate JSON text - use tool calls instead.
+1. You can call MULTIPLE tools in ONE response.
+2. Batch up related actions (create + add) in a single response.
+3. For non-movement actions: Focus on creating narrative, items, and interactions within the current location.
+4. Provide natural, engaging narrative descriptions.
+5. End your response with 3-5 suggested actions for player (as narrative text).
+6. NEVER generate JSON text - use tool calls instead.
+7. IMPORTANT: For exploration questions like "what's around me", "look around", "examine": Provide detailed narrative focusing on current location. Do NOT create adjacent locations - player must explicitly move to explore those.
 
-Available tools: move_to, create_location, create_item, add_item_to_inventory, remove_item_from_inventory, add_item_to_location, remove_item_from_location, use_item, equip_item, unequip_item, combine_items, break_item, add_item_to_container, remove_item_from_container"#,
-            current_loc.name, x, y,
+Available tools: create_item, add_item_to_inventory, remove_item_from_inventory, add_item_to_location, remove_item_from_location, use_item, equip_item, unequip_item, combine_items, break_item, add_item_to_container, remove_item_to_container"#,
+            current_loc.name,
             current_loc.description,
             visible_items,
             player_inventory,
@@ -290,21 +288,21 @@ Available tools: move_to, create_location, create_item, add_item_to_inventory, r
 
     fn get_adjacent_info(&self, x: i32, y: i32) -> String {
         let directions = [
-            ("North", x, y + 1),
-            ("South", x, y - 1),
-            ("East", x + 1, y),
-            ("West", x - 1, y),
+            ("north", x, y + 1),
+            ("south", x, y - 1),
+            ("east", x + 1, y),
+            ("west", x - 1, y),
         ];
 
         directions.iter()
             .map(|(dir, dx, dy)| {
                 let status = self.world.locations.get(&(*dx, *dy))
-                    .map(|l| format!("{} - {}", l.name, l.description))
-                    .unwrap_or_else(|| "UNKNOWN (not yet explored)".to_string());
-                format!("{} at ({}, {}): {}", dir, dx, dy, status)
+                    .map(|l| l.name.as_str())
+                    .unwrap_or("unexplored");
+                format!("{}: {}", dir, status)
             })
             .collect::<Vec<_>>()
-            .join("\n")
+            .join(", ")
     }
 
     fn execute_tool_call(&mut self, tool_call: &ToolCall) -> Result<ToolResult> {
@@ -313,8 +311,6 @@ Available tools: move_to, create_location, create_item, add_item_to_inventory, r
         self.log(&format!("Executing tool: {} with args: {}", name, arguments));
 
         let result = match name.as_str() {
-            "move_to" => self.execute_move_to(arguments)?,
-            "create_location" => self.execute_create_location(arguments)?,
             "create_item" => self.execute_create_item(arguments)?,
             "add_item_to_inventory" => self.execute_add_item_to_inventory(arguments)?,
             "remove_item_from_inventory" => self.execute_remove_item_from_inventory(arguments)?,
@@ -334,74 +330,6 @@ Available tools: move_to, create_location, create_item, add_item_to_inventory, r
             tool_call_id: tool_call.id.clone(),
             content: result,
         })
-    }
-
-    fn execute_move_to(&mut self, arguments: &str) -> Result<String> {
-        let args: serde_json::Value = serde_json::from_str(arguments)?;
-        let x: i32 = args["x"].as_i64().unwrap() as i32;
-        let y: i32 = args["y"].as_i64().unwrap() as i32;
-        let pos = (x, y);
-
-        if self.world.locations.contains_key(&pos) {
-            self.world.current_pos = pos;
-            if let Some(loc) = self.world.locations.get_mut(&pos) {
-                loc.visited = true;
-            }
-            Ok(format!("Moved to ({}, {})", x, y))
-        } else {
-            Err(anyhow::anyhow!("Location ({}, {}) does not exist. Create it first.", x, y))
-        }
-    }
-
-    fn execute_create_location(&mut self, arguments: &str) -> Result<String> {
-        let args: serde_json::Value = serde_json::from_str(arguments)?;
-        let x: i32 = args["x"].as_i64().unwrap() as i32;
-        let y: i32 = args["y"].as_i64().unwrap() as i32;
-        let pos = (x, y);
-
-        if self.world.locations.contains_key(&pos) {
-            return Err(anyhow::anyhow!("Location ({}, {}) already exists", x, y));
-        }
-
-        let exits = args["exits"].as_object()
-            .and_then(|e| {
-                let mut map = std::collections::HashMap::new();
-                for (dir, val) in e {
-                    if let Some(arr) = val.as_array() {
-                        if arr.len() == 2 {
-                            if let (Some(x_val), Some(y_val)) = (arr[0].as_i64(), arr[1].as_i64()) {
-                                map.insert(dir.clone(), Some((x_val as i32, y_val as i32)));
-                            }
-                        }
-                    } else if val.is_null() {
-                        map.insert(dir.clone(), None);
-                    }
-                }
-                Some(map)
-            })
-            .unwrap_or_default();
-
-        let items: Vec<String> = args["items"].as_array()
-            .and_then(|a| a.iter().map(|v| v.as_str().map(|s| s.to_string())).collect())
-            .unwrap_or_default();
-
-        let actors: Vec<String> = args["actors"].as_array()
-            .and_then(|a| a.iter().map(|v| v.as_str().map(|s| s.to_string())).collect())
-            .unwrap_or_default();
-
-        let loc = Location {
-            name: args["name"].as_str().unwrap_or("Unknown").to_string(),
-            description: args["description"].as_str().unwrap_or("").to_string(),
-            image_prompt: args["image_prompt"].as_str().unwrap_or("").to_string(),
-            items,
-            actors,
-            exits,
-            cached_image_path: None,
-            visited: true,
-        };
-
-        self.world.locations.insert(pos, loc);
-        Ok(format!("Created location at ({}, {})", x, y))
     }
 
     fn execute_create_item(&mut self, arguments: &str) -> Result<String> {
@@ -496,28 +424,28 @@ Available tools: move_to, create_location, create_item, add_item_to_inventory, r
 
     fn execute_add_item_to_location(&mut self, arguments: &str) -> Result<String> {
         let args: serde_json::Value = serde_json::from_str(arguments)?;
-        let x: i32 = args["x"].as_i64().unwrap() as i32;
-        let y: i32 = args["y"].as_i64().unwrap() as i32;
         let item_id = args["item_id"].as_str().ok_or_else(|| anyhow::anyhow!("Missing item_id"))?;
 
-        if let Some(loc) = self.world.locations.get_mut(&(x, y)) {
+        if let Some(loc) = self.world.locations.get_mut(&self.world.current_pos) {
             if !loc.items.contains(&item_id.to_string()) {
                 loc.items.push(item_id.to_string());
             }
+            Ok(format!("Added {} to current location", item_id))
+        } else {
+            Err(anyhow::anyhow!("Current location not found"))
         }
-        Ok(format!("Added {} to location ({}, {})", item_id, x, y))
     }
 
     fn execute_remove_item_from_location(&mut self, arguments: &str) -> Result<String> {
         let args: serde_json::Value = serde_json::from_str(arguments)?;
-        let x: i32 = args["x"].as_i64().unwrap() as i32;
-        let y: i32 = args["y"].as_i64().unwrap() as i32;
         let item_id = args["item_id"].as_str().ok_or_else(|| anyhow::anyhow!("Missing item_id"))?;
 
-        if let Some(loc) = self.world.locations.get_mut(&(x, y)) {
+        if let Some(loc) = self.world.locations.get_mut(&self.world.current_pos) {
             loc.items.retain(|id| id != item_id);
+            Ok(format!("Removed {} from current location", item_id))
+        } else {
+            Err(anyhow::anyhow!("Current location not found"))
         }
-        Ok(format!("Removed {} from location ({}, {})", item_id, x, y))
     }
 
     fn execute_use_item(&mut self, arguments: &str) -> Result<String> {
