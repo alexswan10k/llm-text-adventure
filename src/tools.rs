@@ -252,6 +252,80 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["container_id", "item_id"]
             }),
         },
+        ToolDefinition {
+            name: "start_combat",
+            description: "Start combat with enemies at the current location. Enemies must be actors present at this location.",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "enemy_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "IDs of enemy actors to engage in combat (max 4 total including player)"
+                    }
+                },
+                "required": ["enemy_ids"]
+            }),
+        },
+        ToolDefinition {
+            name: "attack_actor",
+            description: "Attack another actor in combat. Calculate damage based on weapon - armor.",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "attacker_id": {"type": "string"},
+                    "target_id": {"type": "string"},
+                    "weapon_id": {"type": "string", "description": "Optional weapon ID to use, defaults to equipped"}
+                },
+                "required": ["attacker_id", "target_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "defend",
+            description: "Increase temporary defense for one round (adds +5 to defense)",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "actor_id": {"type": "string"}
+                },
+                "required": ["actor_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "flee",
+            description: "Attempt to flee from combat. Success chance based on random check.",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "actor_id": {"type": "string"}
+                },
+                "required": ["actor_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "use_item_in_combat",
+            description: "Use an item during combat (consumables, healing potions, etc.)",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "user_id": {"type": "string"},
+                    "item_id": {"type": "string"},
+                    "target_id": {"type": "string", "description": "Optional target actor for the item effect"}
+                },
+                "required": ["user_id", "item_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "end_turn",
+            description: "End the current combatant's turn and move to next combatant",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "actor_id": {"type": "string"}
+                },
+                "required": ["actor_id"]
+            }),
+        },
     ]
 }
 
@@ -263,7 +337,7 @@ mod tests {
     fn test_tool_definitions_exist() {
         let tools = get_tool_definitions();
         assert!(!tools.is_empty());
-        assert_eq!(tools.len(), 15);
+        assert_eq!(tools.len(), 21);
     }
 
     #[test]

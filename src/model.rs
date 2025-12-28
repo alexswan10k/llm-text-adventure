@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize, Deserializer, Serializer};
 use std::collections::HashMap;
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct WorldState {
     pub current_pos: (i32, i32),  // Replaces current_location_id: String
     #[serde(serialize_with = "serialize_coords", deserialize_with = "deserialize_coords")]
@@ -9,6 +9,24 @@ pub struct WorldState {
     pub actors: HashMap<String, Actor>, // Changed to HashMap for easier lookup
     pub items: HashMap<String, Item>,   // Global registry of all items
     pub player: Player,
+    pub combat: CombatState,
+    pub max_items: u32,
+    pub max_combatants: u32,
+}
+
+impl Default for WorldState {
+    fn default() -> Self {
+        Self {
+            current_pos: (0, 0),
+            locations: HashMap::new(),
+            actors: HashMap::new(),
+            items: HashMap::new(),
+            player: Player::default(),
+            combat: CombatState::default(),
+            max_items: 20,
+            max_combatants: 4,
+        }
+    }
 }
 
 // Helper functions for serializing coordinate HashMaps
@@ -159,6 +177,43 @@ impl Default for ItemProperties {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub enum StatusType {
+    Poison,
+    Stunned,
+    Burning,
+    Frozen,
+    Bleeding,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StatusEffect {
+    pub effect_type: StatusType,
+    pub duration: u32,
+    pub severity: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Combatant {
+    pub id: String,
+    pub is_player: bool,
+    pub hp: u32,
+    pub max_hp: u32,
+    pub weapon_id: Option<String>,
+    pub armor_id: Option<String>,
+    pub initiative: u32,
+    pub status_effects: Vec<StatusEffect>,
+    pub temp_defense: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct CombatState {
+    pub active: bool,
+    pub combatants: Vec<Combatant>,
+    pub current_turn_index: usize,
+    pub round_number: u32,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Item {
     pub id: String,
@@ -191,6 +246,14 @@ pub enum GameAction {
     BreakItem(String),
     AddItemToContainer { container_id: String, item_id: String },
     RemoveItemFromContainer { container_id: String, item_id: String },
+
+    StartCombat { enemy_ids: Vec<String> },
+    AttackActor { attacker_id: String, target_id: String, weapon_id: Option<String> },
+    Defend { actor_id: String },
+    Flee { actor_id: String },
+    UseItemInCombat { user_id: String, item_id: String, target_id: Option<String> },
+    EndTurn { actor_id: String },
+    EndCombat { victor_id: String },
 }
 
 // The structure returned by the LLM
@@ -209,6 +272,9 @@ impl WorldState {
             actors: HashMap::new(),
             items: HashMap::new(),
             player: Player::default(),
+            combat: CombatState::default(),
+            max_items: 20,
+            max_combatants: 4,
         }
     }
 }

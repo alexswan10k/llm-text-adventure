@@ -1,4 +1,4 @@
-use crate::model::{WorldState, Item, Location, ItemState, ItemProperties, ItemType};
+use crate::model::{WorldState, Item, Location, ItemState, ItemProperties, ItemType, Combatant, StatusType, CombatState, StatusEffect};
 use crate::tools::{ToolCall, ToolResult, ToolFunction, get_tool_definitions};
 use crate::llm::LlmClient;
 use anyhow::Result;
@@ -202,7 +202,7 @@ impl Agent {
         let (x, y) = self.world.current_pos;
         let adjacent_info = self.get_adjacent_info(x, y);
 
-        let context = format!(
+        let mut context = format!(
             r#"You are Dungeon Master for a text adventure game.
  Current Location: {} at ({}, {})
  Description: {}
@@ -210,7 +210,47 @@ impl Agent {
  Player Inventory: {:?}
  Player Money: {}
 
- Adjacent Areas: {}
+ Adjacent Areas: {}"#,
+            current_loc.name, x, y,
+            current_loc.description,
+            visible_items,
+            player_inventory,
+            self.world.player.money,
+            adjacent_info
+        );
+
+        if self.world.combat.active {
+            let combat_info: Vec<String> = self.world.combat.combatants.iter()
+                .map(|c| {
+                    let status = c.status_effects.iter()
+                        .map(|e| format!("{:?}({}t)", e.effect_type, e.duration))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!(
+                        "- {} ({}): HP {}/{} | Weapon: {:?} | Armor: {:?} | Temp Def: {} | Status: {}",
+                        c.id, if c.is_player { "PLAYER" } else { "ENEMY" },
+                        c.hp, c.max_hp, c.weapon_id, c.armor_id, c.temp_defense, status
+                    )
+                })
+                .collect();
+            context.push_str(&format!(
+                r#"
+
+ COMBAT ACTIVE - Round {} - Turn: {}
+ Combatants:
+ {}
+
+ Combat Actions: start_combat, attack_actor, defend, flee, use_item_in_combat, end_turn"#,
+                self.world.combat.round_number,
+                self.world.combat.combatants.get(self.world.combat.current_turn_index)
+                    .map(|c| c.id.as_str())
+                    .unwrap_or("none"),
+                combat_info.join("\n")
+            ));
+        }
+
+        context.push_str(&format!(
+            r#"
 
  RULES:
  1. You can call MULTIPLE tools in ONE response.
@@ -222,14 +262,8 @@ impl Agent {
  7. End your response with 3-5 suggested actions (in the LLM content, not as a tool).
  8. NEVER generate JSON text - use tool calls instead.
 
- Available tools: move_to, update_location_description, generate_turn_narrative, create_item, add_item_to_inventory, remove_item_from_inventory, add_item_to_location, remove_item_from_location, use_item, equip_item, unequip_item, combine_items, break_item, add_item_to_container, remove_item_to_container"#,
-            current_loc.name, x, y,
-            current_loc.description,
-            visible_items,
-            player_inventory,
-            self.world.player.money,
-            adjacent_info
-        );
+ Available tools: move_to, update_location_description, generate_turn_narrative, create_item, add_item_to_inventory, remove_item_from_inventory, add_item_to_location, remove_item_from_location, use_item, equip_item, unequip_item, combine_items, break_item, add_item_to_container, remove_item_to_container, start_combat, attack_actor, defend, flee, use_item_in_combat, end_turn"#
+        ));
 
         LlmMessage {
             role: "system".to_string(),
@@ -277,7 +311,7 @@ impl Agent {
 
         self.log(&format!("Executing tool: {} with args: {}", name, arguments));
 
-        let result = match name.as_str() {
+let result = match name.as_str() {
             "move_to" => self.execute_move_to(arguments).await?,
             "update_location_description" => self.execute_update_location_description(arguments)?,
             "generate_turn_narrative" => self.execute_generate_turn_narrative(arguments)?,
@@ -292,7 +326,13 @@ impl Agent {
             "combine_items" => self.execute_combine_items(arguments)?,
             "break_item" => self.execute_break_item(arguments)?,
             "add_item_to_container" => self.execute_add_item_to_container(arguments)?,
-            "remove_item_to_container" => self.execute_remove_item_from_container(arguments)?,
+            "remove_item_from_container" => self.execute_remove_item_from_container(arguments)?,
+            "start_combat" => self.execute_start_combat(arguments)?,
+            "attack_actor" => self.execute_attack_actor(arguments)?,
+            "defend" => self.execute_defend(arguments)?,
+            "flee" => self.execute_flee(arguments)?,
+            "use_item_in_combat" => self.execute_use_item_in_combat(arguments)?,
+            "end_turn" => self.execute_end_turn(arguments)?,
             _ => return Err(anyhow::anyhow!("Unknown tool: {}", name)),
         };
 
@@ -645,6 +685,288 @@ Just the JSON. Nothing else."#,
 
         self.turn_narrative = Some(text.to_string());
         Ok("Turn narrative generated".to_string())
+    }
+
+    fn execute_start_combat(&mut self, arguments: &str) -> Result<String> {
+        let args: serde_json::Value = serde_json::from_str(arguments)?;
+        let enemy_ids_val = args["enemy_ids"].as_array().ok_or_else(|| anyhow::anyhow!("Missing enemy_ids array"))?;
+
+        if self.world.combat.active {
+            return Err(anyhow::anyhow!("Combat is already active"));
+        }
+
+        let total_combatants = 1 + enemy_ids_val.len();
+        if total_combatants > self.world.max_combatants as usize {
+            return Err(anyhow::anyhow!("Too many combatants (max {})", self.world.max_combatants));
+        }
+
+        let mut combatants = Vec::new();
+
+        combatants.push(Combatant {
+            id: "player".to_string(),
+            is_player: true,
+            hp: 100,
+            max_hp: 100,
+            weapon_id: None,
+            armor_id: None,
+            initiative: rand::random::<u32>() % 20 + 1,
+            status_effects: Vec::new(),
+            temp_defense: 0,
+        });
+
+        for enemy_id_val in enemy_ids_val {
+            let enemy_id = enemy_id_val.as_str().ok_or_else(|| anyhow::anyhow!("Invalid enemy_id"))?;
+            if let Some(actor) = self.world.actors.get(enemy_id) {
+                if actor.current_pos != self.world.current_pos {
+                    return Err(anyhow::anyhow!("Enemy {} is not at current location", enemy_id));
+                }
+                combatants.push(Combatant {
+                    id: enemy_id.to_string(),
+                    is_player: false,
+                    hp: 50,
+                    max_hp: 50,
+                    weapon_id: None,
+                    armor_id: None,
+                    initiative: rand::random::<u32>() % 20 + 1,
+                    status_effects: Vec::new(),
+                    temp_defense: 0,
+                });
+            }
+        }
+
+        combatants.sort_by(|a, b| b.initiative.cmp(&a.initiative));
+
+        self.world.combat = CombatState {
+            active: true,
+            combatants,
+            current_turn_index: 0,
+            round_number: 1,
+        };
+
+        Ok(format!("Started combat with {} enemies", enemy_ids_val.len()))
+    }
+
+    fn execute_attack_actor(&mut self, arguments: &str) -> Result<String> {
+        let args: serde_json::Value = serde_json::from_str(arguments)?;
+        let attacker_id = args["attacker_id"].as_str().ok_or_else(|| anyhow::anyhow!("Missing attacker_id"))?;
+        let target_id = args["target_id"].as_str().ok_or_else(|| anyhow::anyhow!("Missing target_id"))?;
+        let weapon_id_opt = args["weapon_id"].as_str();
+
+        if !self.world.combat.active {
+            return Err(anyhow::anyhow!("Combat is not active"));
+        }
+
+        let _attacker_idx = self.world.combat.combatants.iter()
+            .position(|c| c.id == attacker_id)
+            .ok_or_else(|| anyhow::anyhow!("Attacker not in combat"))?;
+
+        let target_idx = self.world.combat.combatants.iter()
+            .position(|c| c.id == target_id)
+            .ok_or_else(|| anyhow::anyhow!("Target not in combat"))?;
+
+        let weapon_damage = if let Some(weapon_id) = weapon_id_opt {
+            self.world.items.get(weapon_id).and_then(|i| i.properties.damage).unwrap_or(5)
+        } else {
+            5
+        };
+
+        let armor_defense = self.world.combat.combatants[target_idx].armor_id.as_ref()
+            .and_then(|id| self.world.items.get(id))
+            .and_then(|i| i.properties.defense)
+            .unwrap_or(0);
+
+        let temp_defense = self.world.combat.combatants[target_idx].temp_defense;
+        let total_defense = armor_defense + temp_defense;
+
+        let damage = weapon_damage.saturating_sub(total_defense);
+        let final_damage = if damage == 0 { 1 } else { damage };
+
+        self.world.combat.combatants[target_idx].hp = self.world.combat.combatants[target_idx].hp.saturating_sub(final_damage);
+
+        Ok(format!("{} attacked {} for {} damage", attacker_id, target_id, final_damage))
+    }
+
+    fn execute_defend(&mut self, arguments: &str) -> Result<String> {
+        let args: serde_json::Value = serde_json::from_str(arguments)?;
+        let actor_id = args["actor_id"].as_str().ok_or_else(|| anyhow::anyhow!("Missing actor_id"))?;
+
+        if !self.world.combat.active {
+            return Err(anyhow::anyhow!("Combat is not active"));
+        }
+
+        let combatant_idx = self.world.combat.combatants.iter()
+            .position(|c| c.id == actor_id)
+            .ok_or_else(|| anyhow::anyhow!("Actor not in combat"))?;
+
+        self.world.combat.combatants[combatant_idx].temp_defense += 5;
+
+        Ok(format!("{} is defending (+5 temp defense)", actor_id))
+    }
+
+    fn execute_flee(&mut self, arguments: &str) -> Result<String> {
+        let args: serde_json::Value = serde_json::from_str(arguments)?;
+        let actor_id = args["actor_id"].as_str().ok_or_else(|| anyhow::anyhow!("Missing actor_id"))?;
+
+        if !self.world.combat.active {
+            return Err(anyhow::anyhow!("Combat is not active"));
+        }
+
+        let roll = rand::random::<u32>() % 20;
+        if roll >= 10 {
+            self.world.combat.combatants.retain(|c| c.id != actor_id);
+
+            if !self.world.combat.combatants.iter().any(|c| c.is_player) ||
+               !self.world.combat.combatants.iter().any(|c| !c.is_player) {
+                self.world.combat.active = false;
+            }
+
+            Ok(format!("{} fled successfully!", actor_id))
+        } else {
+            Ok(format!("{} failed to flee", actor_id))
+        }
+    }
+
+    fn execute_use_item_in_combat(&mut self, arguments: &str) -> Result<String> {
+        let args: serde_json::Value = serde_json::from_str(arguments)?;
+        let user_id = args["user_id"].as_str().ok_or_else(|| anyhow::anyhow!("Missing user_id"))?;
+        let item_id = args["item_id"].as_str().ok_or_else(|| anyhow::anyhow!("Missing item_id"))?;
+
+        if !self.world.combat.active {
+            return Err(anyhow::anyhow!("Combat is not active"));
+        }
+
+        let combatant_idx = self.world.combat.combatants.iter()
+            .position(|c| c.id == user_id)
+            .ok_or_else(|| anyhow::anyhow!("User not in combat"))?;
+
+        if !self.world.player.inventory.contains(&item_id.to_string()) {
+            return Err(anyhow::anyhow!("Item {} not in inventory", item_id));
+        }
+
+        if let Some(item) = self.world.items.get_mut(item_id) {
+            if item.properties.usable {
+                match &mut item.state {
+                    ItemState::Consumed { charges, max_charges: _ } if *charges > 1 => {
+                        *charges -= 1;
+                    }
+                    ItemState::Consumed { .. } => {
+                        self.world.player.inventory.retain(|id| id != item_id);
+                    }
+                    _ => {}
+                }
+
+                let heal_amount = 20;
+                self.world.combat.combatants[combatant_idx].hp = (self.world.combat.combatants[combatant_idx].hp + heal_amount)
+                    .min(self.world.combat.combatants[combatant_idx].max_hp);
+
+                Ok(format!("{} used {} and healed for {}", user_id, item_id, heal_amount))
+            } else {
+                Err(anyhow::anyhow!("Item {} is not usable", item_id))
+            }
+        } else {
+            Err(anyhow::anyhow!("Item {} not found", item_id))
+        }
+    }
+
+    fn execute_end_turn(&mut self, arguments: &str) -> Result<String> {
+        let args: serde_json::Value = serde_json::from_str(arguments)?;
+        let actor_id = args["actor_id"].as_str().ok_or_else(|| anyhow::anyhow!("Missing actor_id"))?;
+
+        if !self.world.combat.active {
+            return Err(anyhow::anyhow!("Combat is not active"));
+        }
+
+        let current_idx = self.world.combat.current_turn_index;
+        if self.world.combat.combatants.get(current_idx).map(|c| &c.id) != Some(&actor_id.to_string()) {
+            return Err(anyhow::anyhow!("Not {}'s turn", actor_id));
+        }
+
+        for combatant in &mut self.world.combat.combatants {
+            combatant.temp_defense = 0;
+        }
+
+        let mut new_turn_index = current_idx + 1;
+
+        while new_turn_index < self.world.combat.combatants.len() {
+            let has_stunned = self.world.combat.combatants[new_turn_index]
+                .status_effects
+                .iter()
+                .any(|e| e.effect_type == StatusType::Stunned);
+
+            if !has_stunned {
+                break;
+            }
+
+            for effect in &mut self.world.combat.combatants[new_turn_index].status_effects {
+                if effect.duration > 0 {
+                    effect.duration -= 1;
+                }
+            }
+
+            new_turn_index += 1;
+        }
+
+        if new_turn_index >= self.world.combat.combatants.len() {
+            self.world.combat.round_number += 1;
+
+            for combatant in &mut self.world.combat.combatants {
+                let mut new_effects = Vec::new();
+                for effect in &combatant.status_effects {
+                    let remaining = effect.duration - 1;
+                    match effect.effect_type {
+                        StatusType::Poison | StatusType::Burning => {
+                            if combatant.hp > effect.severity {
+                                combatant.hp -= effect.severity;
+                            } else {
+                                combatant.hp = 0;
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    if remaining > 0 {
+                        new_effects.push(StatusEffect {
+                            effect_type: effect.effect_type.clone(),
+                            duration: remaining,
+                            severity: effect.severity,
+                        });
+                    }
+                }
+                combatant.status_effects = new_effects;
+            }
+
+            self.world.combat.combatants.retain(|c| c.hp > 0);
+
+            let player_alive = self.world.combat.combatants.iter().any(|c| c.is_player);
+            let enemies_alive = self.world.combat.combatants.iter().any(|c| !c.is_player);
+
+            if !player_alive || !enemies_alive {
+                self.world.combat.active = false;
+                return Ok("Combat ended".to_string());
+            }
+
+            new_turn_index = 0;
+
+            while new_turn_index < self.world.combat.combatants.len() &&
+                  self.world.combat.combatants[new_turn_index]
+                      .status_effects
+                      .iter()
+                      .any(|e| e.effect_type == StatusType::Stunned) {
+                new_turn_index += 1;
+            }
+
+            if new_turn_index >= self.world.combat.combatants.len() {
+                new_turn_index = 0;
+            }
+        }
+
+        self.world.combat.current_turn_index = new_turn_index;
+
+        let next_combatant = self.world.combat.combatants.get(new_turn_index)
+            .map(|c| c.id.as_str())
+            .unwrap_or("none");
+
+        Ok(format!("Turn ended. Next: {}", next_combatant))
     }
 
     fn extract_suggested_actions(&self, narrative: &str) -> Vec<String> {

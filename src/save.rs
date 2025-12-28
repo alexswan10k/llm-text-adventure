@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use crate::model::{WorldState, Location, Actor};
+use crate::model::{WorldState, Location, Actor, CombatState};
 use std::path::PathBuf;
 use std::fs;
 use std::collections::HashMap;
@@ -302,6 +302,9 @@ impl SaveManager {
             actors: new_actors,
             items: new_items,
             player,
+            combat: CombatState::default(),
+            max_items: 20,
+            max_combatants: 4,
         })
     }
 

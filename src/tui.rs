@@ -270,15 +270,57 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
     }
 
     fn render_main_game(frame: &mut Frame, game: &Game, input_buffer: &str, spinner_char: char) {
+        let mut constraints = vec![
+            Constraint::Min(1), // Main content
+        ];
+
+        if game.world.combat.active {
+            constraints.push(Constraint::Length(8)); // Combat UI when active
+        }
+
+        constraints.extend([
+            Constraint::Length(10), // Debug Log
+            Constraint::Length(3),  // Input bar
+            Constraint::Length(1),  // Status bar
+        ]);
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(1), // Main content
-                Constraint::Length(10), // Debug Log (New)
-                Constraint::Length(3), // Input bar
-                Constraint::Length(1), // Status bar
-            ])
+            .constraints(constraints.as_slice())
             .split(frame.area());
+
+        let top_chunks_idx = if game.world.combat.active { 2 } else { 1 };
+        let debug_chunks_start = if game.world.combat.active { 3 } else { 2 };
+        let input_chunk = if game.world.combat.active { 4 } else { 3 };
+        let status_chunk = if game.world.combat.active { 5 } else { 4 };
+
+        // Combat UI (only when active)
+        if game.world.combat.active {
+            let combat_block = Block::default().borders(Borders::ALL).title("COMBAT").style(Style::default().bg(Color::Red));
+            let mut combat_text = format!("Round {} - Turn: {}\n\n",
+                game.world.combat.round_number,
+                game.world.combat.combatants.get(game.world.combat.current_turn_index)
+                    .map(|c| c.id.as_str())
+                    .unwrap_or("none")
+            );
+
+            for (i, combatant) in game.world.combat.combatants.iter().enumerate() {
+                let marker = if i == game.world.combat.current_turn_index { "► " } else { "  " };
+                let hp_bar_len = ((combatant.hp as f32 / combatant.max_hp as f32) * 10.0).round() as usize;
+                let hp_bar: String = "#".repeat(hp_bar_len) + &".".repeat(10 - hp_bar_len);
+                combat_text.push_str(&format!(
+                    "{}{} ({}): [{}] {}/{}\n",
+                    marker,
+                    combatant.id,
+                    if combatant.is_player { "PLAYER" } else { "ENEMY" },
+                    hp_bar,
+                    combatant.hp,
+                    combatant.max_hp
+                ));
+            }
+
+            frame.render_widget(Paragraph::new(combat_text).block(combat_block), chunks[1]);
+        }
 
         let top_chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -286,7 +328,7 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
                 Constraint::Percentage(50), // Image
                 Constraint::Percentage(50), // Narrative
             ])
-            .split(chunks[0]);
+            .split(chunks[top_chunks_idx]);
 
         // Image Area
         let image_block = Block::default().borders(Borders::ALL).title("Visuals");
@@ -331,7 +373,7 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
                 Constraint::Percentage(50), // Map
                 Constraint::Percentage(50), // Debug Log
             ])
-            .split(chunks[1]);
+            .split(chunks[debug_chunks_start]);
 
         // Map Area
         let map_block = Block::default().borders(Borders::ALL).title("Map");
@@ -355,7 +397,7 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
             },
             _ => input_buffer.to_string(),
         };
-        frame.render_widget(Paragraph::new(input_text).block(input_block), chunks[2]);
+        frame.render_widget(Paragraph::new(input_text).block(input_block), chunks[input_chunk]);
 
         // Status Bar
         let status_text = format!(
@@ -368,7 +410,7 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
             },
             game.world.player.money
         );
-        frame.render_widget(Paragraph::new(status_text).style(Style::default().bg(Color::Blue).fg(Color::White)), chunks[3]);
+        frame.render_widget(Paragraph::new(status_text).style(Style::default().bg(Color::Blue).fg(Color::White)), chunks[status_chunk]);
     }
 }
 
