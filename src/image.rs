@@ -1,5 +1,6 @@
 use anyhow::Result;
 use crate::model::Location;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 
 #[async_trait::async_trait]

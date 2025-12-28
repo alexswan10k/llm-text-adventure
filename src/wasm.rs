@@ -6,8 +6,7 @@ use ratatui::Terminal;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use crate::input::{InputEvent, KeyCode, KeyEvent, KeyEventKind};
-use ratatui::Frame;
-use ratatui::layout::{Rect, Size};
+use ratatui::layout::Size;
 
 // Thread-local event queue
 thread_local! {
@@ -39,33 +38,37 @@ pub struct WasmEventSource;
 #[async_trait::async_trait(?Send)]
 impl EventSource for WasmEventSource {
     async fn next_event(&mut self) -> anyhow::Result<Option<InputEvent>> {
-        // Yield to JS loop to allow input events to be processed
-        let promise = js_sys::Promise::resolve(&JsValue::NULL);
-        wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
+        if let Some(event) = EVENT_QUEUE.with(|q| q.borrow_mut().pop_front()) {
+            web_sys::console::log_1(&format!("WASM: Processing event {:?}", event).into());
+            return Ok(Some(event));
+        }
 
-        Ok(EVENT_QUEUE.with(|q| q.borrow_mut().pop_front()))
+        // Yield to JS loop to allow input events to be processed and browser to render
+        let promise = js_sys::Promise::new(&mut |resolve, _| {
+            web_sys::window().unwrap()
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 10).unwrap();
+        });
+        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+
+        Ok(None)
     }
 }
 
 #[wasm_bindgen]
 pub async fn start_game(base_url: String, model_name: String) -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
+    web_sys::console::log_1(&format!("WASM: start_game starting. URL: {}, Model: {}", base_url, model_name).into());
     
     let llm_client = LlmClient::new(base_url, model_name);
     let mut game = Game::new(llm_client);
 
-    // Use TestBackend to capture output
-    // We need a custom wrapper to render to DOM on draw
-    // But Tui takes ownership of Terminal.
-    // We can't easily hook into draw unless we make a custom Backend.
-    // Let's make a simple DomBackend that wraps TestBackend.
-    
     let backend = DomBackend::new();
     let terminal = Terminal::new(backend).map_err(|e| JsValue::from_str(&e.to_string()))?;
     
     let event_source = WasmEventSource;
     let mut tui = Tui::new(terminal, event_source);
 
+    web_sys::console::log_1(&"WASM: Entering TUI run loop".into());
     tui.run(&mut game).await.map_err(|e| JsValue::from_str(&e.to_string()))?;
 
     Ok(())
@@ -77,7 +80,6 @@ struct DomBackend {
 
 impl DomBackend {
     fn new() -> Self {
-        // Initialize with a reasonable size
         Self {
             inner: TestBackend::new(80, 24),
         }
@@ -89,29 +91,27 @@ impl DomBackend {
         
         for y in 0..buffer.area.height {
             for x in 0..buffer.area.width {
-                let cell = buffer.get(x, y);
+                let cell = &buffer[(x, y)];
                 full_text.push_str(cell.symbol());
             }
             full_text.push('\n');
         }
 
-        let window = web_sys::window().unwrap();
-        let document = window.document().unwrap();
+        let window = web_sys::window().expect("no window");
+        let document = window.document().expect("no document");
         
-        // Fallback or main terminal
         if let Some(element) = document.get_element_by_id("terminal") {
-            element.set_inner_html(&full_text);
+            element.set_text_content(Some(&full_text));
         }
 
-        // Try to update specific panels if they exist
-        // This is a simple "bridge" between TUI rendering and a modern UI
-        // In a more complete refactor, we'd pass state directly.
-        if let Some(el) = document.get_element_by_id("narrative-content") {
-            // Extract narrative part (this is a bit hacky but works for now)
-            el.set_inner_html(&full_text); // For now, use the full text as fallback
+        // Also update state status if we can find it in the text (crude)
+        if full_text.contains("Thinking...") {
+            if let Some(el) = document.get_element_by_id("state-status") {
+                el.set_text_content(Some("State: Thinking..."));
+            }
+        } else if let Some(el) = document.get_element_by_id("state-status") {
+            el.set_text_content(Some("State: Ready"));
         }
-        
-        // We can also use web_sys::console::log_1 to debug
     }
 }
 

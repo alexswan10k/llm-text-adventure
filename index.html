@@ -185,34 +185,54 @@
         import init, { start_game, send_input } from './pkg/llm_text_adventure.js';
 
         async function run() {
-            await init();
+            const status = document.getElementById('save-status');
+            try {
+                console.log("Loading WASM...");
+                await init();
+                console.log("WASM Loaded.");
 
-            const params = new URLSearchParams(window.location.search);
-            const baseUrl = params.get('url') || "http://localhost:1234";
-            const model = params.get('model') || "qwen3-coder-30b-a3b-instruct";
+                const params = new URLSearchParams(window.location.search);
+                const baseUrl = params.get('url') || "http://localhost:1234";
+                const model = params.get('model') || "qwen3-coder-30b-a3b-instruct";
 
-            start_game(baseUrl, model);
+                console.log(`Starting game with URL: ${baseUrl}, Model: ${model}`);
+                status.innerText = "System: Starting...";
 
-            const input = document.getElementById('command-input');
-            input.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') {
-                    const val = input.value;
-                    for (const char of val) {
-                        send_input(char);
+                // We don't await start_game if it's a long running loop,
+                // but start_game is async in rust, so it returns a promise.
+                start_game(baseUrl, model).catch(e => {
+                    console.error("Game loop error:", e);
+                    status.innerText = "Error: Game Crashed";
+                });
+
+                const input = document.getElementById('command-input');
+                input.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') {
+                        const val = input.value;
+                        console.log(`Sending command: "${val}"`);
+                        for (const char of val) {
+                            send_input(char);
+                        }
+                        send_input('Enter');
+                        input.value = '';
+                    } else if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Escape'].includes(e.key)) {
+                        console.log(`Sending special key: ${e.key}`);
+                        send_input(e.key);
                     }
-                    send_input('Enter');
-                    input.value = '';
-                } else if (['Backspace', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
-                    send_input(e.key);
-                }
-            });
+                });
 
-            // Focus input on any key press if not focused
-            document.addEventListener('keydown', (e) => {
-                if (document.activeElement !== input && e.key.length === 1) {
-                    input.focus();
-                }
-            });
+                document.addEventListener('keydown', (e) => {
+                    if (document.activeElement !== input && e.key.length === 1) {
+                        input.focus();
+                    }
+                });
+
+                console.log("Initialization complete. UI is ready.");
+                status.innerText = "System: Ready";
+            } catch (err) {
+                console.error("Initialization failed:", err);
+                status.innerText = "Error: " + err.message;
+            }
         }
 
         run();

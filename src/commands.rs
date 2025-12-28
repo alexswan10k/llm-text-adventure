@@ -16,6 +16,7 @@ pub enum Command {
     MoveWest,
     SelectOption(usize),
     TextInput(String),
+    None,
 }
 
 impl Command {

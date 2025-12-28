@@ -6,7 +6,9 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap, List, ListItem, ListState},
     Terminal,
 };
-use crate::input::{InputEvent, KeyCode, KeyEventKind, KeyEvent};
+use crate::input::{InputEvent, KeyCode, KeyEventKind};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::input::KeyEvent;
 
 // Trait for getting events (Native vs WASM)
 #[async_trait::async_trait(?Send)]
@@ -69,7 +71,7 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
                                 KeyCode::Enter => Command::Enter,
                                 KeyCode::Backspace => Command::Backspace,
                                 KeyCode::Char(c) => Command::TextInput(c.to_string()),
-                                _ => return Ok(()),
+                                _ => Command::None
                             };
                             game.process_command(command).await?;
                         } else if game.state == GameState::SplashScreen {
@@ -84,7 +86,7 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
                                 KeyCode::Up => Command::Up,
                                 KeyCode::Down => Command::Down,
                                 KeyCode::Delete => Command::Delete,
-                                _ => return Ok(()),
+                                _ => Command::None
                             };
                             game.process_command(command).await?;
                         } else if game.state == GameState::WaitingForInput {

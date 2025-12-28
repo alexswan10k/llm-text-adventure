@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use anyhow::{Result, Context};
 use crate::model::{WorldUpdate, Location};
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 #[derive(Clone)]
