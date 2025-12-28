@@ -1,4 +1,7 @@
 /target
 /saves
+/pkg
+.DS_Store
 session-server/saves
 session-server/node_modules/
+*.log

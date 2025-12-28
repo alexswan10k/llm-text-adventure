@@ -197,3 +197,7 @@ This script installs `wasm-pack` if needed, builds the project, and starts a loc
     - **Arrow Keys**: Quick move to explored adjacent cells (North/South/East/West).
     - **Text Input**: Type action (e.g., "look around", "go north", "take sword") and press `Enter` for LLM-driven actions.
     - `Esc`: Quit.
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
