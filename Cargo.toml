@@ -10,22 +10,27 @@ crate-type = ["cdylib", "rlib"]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 rand = "0.8"
 uuid = { version = "1.0", features = ["v4", "fast-rng", "macro-diagnostics", "rng-rand"] }
 reqwest = { version = "0.11", features = ["json"] }
 strum = { version = "0.26", features = ["derive"] }
 strum_macros = "0.26"
+ratatui = { version = "0.29.0", default-features = false }
 async-trait = "0.1"
+# crossterm removed from common
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1", features = ["full"] }
-ratatui = "0.29.0"
-crossterm = "0.28.1"
 clap = { version = "4.5", features = ["derive"] }
+ratatui = { version = "0.29.0", features = ["crossterm"] }
+crossterm = { version = "0.28.1", features = ["bracketed-paste", "event-stream"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["console"] }
+web-sys = { version = "0.3", features = ["console", "Window", "Document", "Element", "HtmlElement", "HtmlInputElement", "Storage"] }
 console_error_panic_hook = "0.1"
+getrandom = { version = "0.2", features = ["js"] }
+getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+js-sys = "0.3"

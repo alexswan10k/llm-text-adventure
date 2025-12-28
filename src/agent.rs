@@ -333,6 +333,7 @@ let result = match name.as_str() {
             "flee" => self.execute_flee(arguments)?,
             "use_item_in_combat" => self.execute_use_item_in_combat(arguments)?,
             "end_turn" => self.execute_end_turn(arguments)?,
+            "inspect_object" => self.execute_inspect_object(arguments)?,
             _ => return Err(anyhow::anyhow!("Unknown tool: {}", name)),
         };
 
@@ -967,6 +968,27 @@ Just the JSON. Nothing else."#,
             .unwrap_or("none");
 
         Ok(format!("Turn ended. Next: {}", next_combatant))
+    }
+
+    fn execute_inspect_object(&mut self, arguments: &str) -> Result<String> {
+        let args: serde_json::Value = serde_json::from_str(arguments)?;
+        let id = args["object_id"].as_str().ok_or_else(|| anyhow::anyhow!("Missing object_id"))?;
+
+        if let Some(item) = self.world.items.get(id) {
+            return Ok(format!(
+                "Item: {}\nDescription: {}\nType: {:?}\nState: {:?}\nProperties: {:?}",
+                item.name, item.description, item.item_type, item.state, item.properties
+            ));
+        }
+
+        if let Some(actor) = self.world.actors.get(id) {
+            return Ok(format!(
+                "Actor: {}\nDescription: {}\nInventory: {:?}\nMoney: {}",
+                actor.name, actor.description, actor.inventory, actor.money
+            ));
+        }
+
+        Err(anyhow::anyhow!("Object {} not found", id))
     }
 
     fn extract_suggested_actions(&self, narrative: &str) -> Vec<String> {

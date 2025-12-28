@@ -326,7 +326,15 @@ Just the JSON. Nothing else."#,
                         break;
                     }
 
-                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                         let promise = js_sys::Promise::new(&mut |resolve, _| {
+                             web_sys::window().unwrap().set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 500).unwrap();
+                         });
+                         wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
+                    }
                 }
             }
         }

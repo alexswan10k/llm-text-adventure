@@ -1,33 +1,37 @@
 use anyhow::{Context, Result};
 use crate::model::{WorldState, Location, Actor, CombatState};
 use std::path::PathBuf;
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs;
 use std::collections::HashMap;
 use chrono::{DateTime, Local};
 use serde_json::Value;
 
-pub struct SaveManager {
+pub trait Storage {
+    fn list_saves(&self) -> Result<Vec<SaveInfo>>;
+    fn save_game(&self, filename: &str, content: &str) -> Result<()>;
+    fn load_game(&self, filename: &str) -> Result<String>;
+    fn delete_save(&self, filename: &str) -> Result<()>;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub struct FileSystemStorage {
     save_dir: PathBuf,
 }
 
-#[derive(Debug, Clone)]
-pub struct SaveInfo {
-    pub filename: String,
-    pub path: PathBuf,
-    pub modified: DateTime<Local>,
-}
-
-impl SaveManager {
-    pub fn new() -> Self {
-        let save_dir = PathBuf::from("saves");
-        // Ensure directory exists
+#[cfg(not(target_arch = "wasm32"))]
+impl FileSystemStorage {
+    pub fn new(save_dir: PathBuf) -> Self {
         if !save_dir.exists() {
             fs::create_dir_all(&save_dir).unwrap_or_default();
         }
         Self { save_dir }
     }
+}
 
-    pub fn list_saves(&self) -> Result<Vec<SaveInfo>> {
+#[cfg(not(target_arch = "wasm32"))]
+impl Storage for FileSystemStorage {
+    fn list_saves(&self) -> Result<Vec<SaveInfo>> {
         let mut saves = Vec::new();
         if !self.save_dir.exists() {
             return Ok(saves);
@@ -51,16 +55,169 @@ impl SaveManager {
                 });
             }
         }
+        Ok(saves)
+    }
 
+    fn save_game(&self, filename: &str, content: &str) -> Result<()> {
+        let path = self.save_dir.join(filename);
+        fs::write(&path, content)
+            .context(format!("Failed to write save file: {:?}", path))?;
+        Ok(())
+    }
+
+    fn load_game(&self, filename: &str) -> Result<String> {
+        let path = self.save_dir.join(filename);
+        fs::read_to_string(&path)
+            .context(format!("Failed to read save file: {:?}", path))
+    }
+
+    fn delete_save(&self, filename: &str) -> Result<()> {
+        let path = self.save_dir.join(filename);
+        if path.exists() {
+            fs::remove_file(&path)
+                .context(format!("Failed to delete save file: {:?}", path))?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub struct BrowserStorage {
+    prefix: String,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl BrowserStorage {
+    pub fn new() -> Self {
+        Self { prefix: "save_".to_string() }
+    }
+
+    fn get_storage(&self) -> web_sys::Storage {
+        web_sys::window().unwrap().local_storage().unwrap().unwrap()
+    }
+
+    fn get_meta_key(&self) -> String {
+        format!("{}metadata", self.prefix)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SaveMetadata {
+    filename: String,
+    modified: DateTime<Local>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Storage for BrowserStorage {
+    fn list_saves(&self) -> Result<Vec<SaveInfo>> {
+        let storage = self.get_storage();
+        let meta_json = storage.get_item(&self.get_meta_key()).unwrap_or_default()
+            .unwrap_or_else(|| "[]".to_string());
+        
+        let meta_list: Vec<SaveMetadata> = serde_json::from_str(&meta_json).unwrap_or_default();
+        
+        Ok(meta_list.into_iter().map(|m| SaveInfo {
+            filename: m.filename.clone(),
+            path: PathBuf::from(&m.filename),
+            modified: m.modified,
+        }).collect())
+    }
+
+    fn save_game(&self, filename: &str, content: &str) -> Result<()> {
+        let storage = self.get_storage();
+        storage.set_item(&format!("{}{}", self.prefix, filename), content)
+            .map_err(|e| anyhow::anyhow!("Failed to save to localStorage: {:?}", e))?;
+
+        // Update metadata
+        let mut saves = self.list_saves().unwrap_or_default();
+        if let Some(existing) = saves.iter_mut().find(|s| s.filename == filename) {
+            existing.modified = Local::now();
+        } else {
+            saves.push(SaveInfo {
+                filename: filename.to_string(),
+                path: PathBuf::from(filename),
+                modified: Local::now(),
+            });
+        }
+
+        let meta_list: Vec<SaveMetadata> = saves.into_iter().map(|s| SaveMetadata {
+            filename: s.filename,
+            modified: s.modified,
+        }).collect();
+
+        let meta_json = serde_json::to_string(&meta_list)?;
+        storage.set_item(&self.get_meta_key(), &meta_json)
+            .map_err(|e| anyhow::anyhow!("Failed to update metadata: {:?}", e))?;
+
+        Ok(())
+    }
+
+    fn load_game(&self, filename: &str) -> Result<String> {
+        let storage = self.get_storage();
+        storage.get_item(&format!("{}{}", self.prefix, filename))
+            .map_err(|e| anyhow::anyhow!("Failed to read from localStorage: {:?}", e))?
+            .ok_or_else(|| anyhow::anyhow!("Save file not found"))
+    }
+
+    fn delete_save(&self, filename: &str) -> Result<()> {
+        let storage = self.get_storage();
+        storage.remove_item(&format!("{}{}", self.prefix, filename))
+            .map_err(|e| anyhow::anyhow!("Failed to remove from localStorage: {:?}", e))?;
+
+        // Update metadata
+        let mut saves = self.list_saves().unwrap_or_default();
+        saves.retain(|s| s.filename != filename);
+
+        let meta_list: Vec<SaveMetadata> = saves.into_iter().map(|s| SaveMetadata {
+            filename: s.filename,
+            modified: s.modified,
+        }).collect();
+
+        let meta_json = serde_json::to_string(&meta_list)?;
+        storage.set_item(&self.get_meta_key(), &meta_json)
+            .map_err(|e| anyhow::anyhow!("Failed to update metadata: {:?}", e))?;
+
+        Ok(())
+    }
+}
+
+pub struct SaveManager {
+    storage: Box<dyn Storage>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SaveInfo {
+    pub filename: String,
+    pub path: PathBuf,
+    pub modified: DateTime<Local>,
+}
+
+impl SaveManager {
+    pub fn new() -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Self {
+                storage: Box::new(FileSystemStorage::new(PathBuf::from("saves"))),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Self {
+                storage: Box::new(BrowserStorage::new()),
+            }
+        }
+    }
+
+    pub fn list_saves(&self) -> Result<Vec<SaveInfo>> {
+        let mut saves = self.storage.list_saves()?;
         // Sort by newest first
         saves.sort_by(|a, b| b.modified.cmp(&a.modified));
         Ok(saves)
     }
 
     pub fn load_save(&self, filename: &str) -> Result<WorldState> {
-        let path = self.save_dir.join(filename);
-        let content = fs::read_to_string(&path)
-            .context(format!("Failed to read save file: {:?}", path))?;
+        let content = self.storage.load_game(filename)?;
         
         // Try to load as new format first
         match serde_json::from_str::<WorldState>(&content) {
@@ -309,11 +466,9 @@ impl SaveManager {
     }
 
     pub fn save_game(&self, filename: &str, world: &WorldState) -> Result<()> {
-        let path = self.save_dir.join(filename);
         let content = serde_json::to_string_pretty(world)
             .context("Failed to serialize world state")?;
-        fs::write(&path, content)
-            .context(format!("Failed to write save file: {:?}", path))?;
+        self.storage.save_game(filename, &content)?;
         Ok(())
     }
 
@@ -329,11 +484,6 @@ impl SaveManager {
     }
 
     pub fn delete_save(&self, filename: &str) -> Result<()> {
-        let path = self.save_dir.join(filename);
-        if path.exists() {
-            fs::remove_file(&path)
-                .context(format!("Failed to delete save file: {:?}", path))?;
-        }
-        Ok(())
+        self.storage.delete_save(filename)
     }
 }

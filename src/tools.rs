@@ -326,6 +326,17 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["actor_id"]
             }),
         },
+        ToolDefinition {
+            name: "inspect_object",
+            description: "Get detailed information about an item or actor. This does not change the world state but allows the agent to provide richer descriptions.",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "object_id": {"type": "string", "description": "ID of the item or actor to inspect"}
+                },
+                "required": ["object_id"]
+            }),
+        },
     ]
 }
 
@@ -337,7 +348,7 @@ mod tests {
     fn test_tool_definitions_exist() {
         let tools = get_tool_definitions();
         assert!(!tools.is_empty());
-        assert_eq!(tools.len(), 21);
+        assert_eq!(tools.len(), 22);
     }
 
     #[test]

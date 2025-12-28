@@ -31,11 +31,13 @@ impl LlmClient {
         Self {
             base_url,
             model_name,
-            client: reqwest::ClientBuilder::new()
-                .timeout(Duration::from_secs(60))
-                .connect_timeout(Duration::from_secs(15))
-                .build()
-                .expect("Failed to build reqwest client"),
+            client: {
+                let builder = reqwest::ClientBuilder::new();
+                #[cfg(not(target_arch = "wasm32"))]
+                let builder = builder.timeout(Duration::from_secs(60))
+                    .connect_timeout(Duration::from_secs(15));
+                builder.build().expect("Failed to build reqwest client")
+            },
         }
     }
 
@@ -51,14 +53,19 @@ impl LlmClient {
             stream: false,
         };
 
-        let response = tokio::time::timeout(
-            Duration::from_secs(55),
-            self.client.post(&format!("{}/v1/chat/completions", self.base_url))
+        let future = self.client.post(&format!("{}/v1/chat/completions", self.base_url))
                 .json(&request)
-                .send()
-        ).await
-        .context("LLM request timed out after 55 seconds")?
-        .context("Failed to send request to LLM")?;
+                .send();
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let response = tokio::time::timeout(Duration::from_secs(55), future)
+            .await
+            .context("LLM request timed out after 55 seconds")?
+            .context("Failed to send request to LLM")?;
+
+        #[cfg(target_arch = "wasm32")]
+        let response = future.await
+            .context("Failed to send request to LLM")?;
 
         let response_json: serde_json::Value = response.json().await
             .context("Failed to parse LLM response JSON")?;
@@ -81,14 +88,19 @@ impl LlmClient {
             stream: false,
         };
 
-        let response = tokio::time::timeout(
-            Duration::from_secs(55),
-            self.client.post(&format!("{}/v1/chat/completions", self.base_url))
+        let future = self.client.post(&format!("{}/v1/chat/completions", self.base_url))
                 .json(&request)
-                .send()
-        ).await
-        .context("LLM request timed out after 55 seconds")?
-        .context("Failed to send request to LLM")?;
+                .send();
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let response = tokio::time::timeout(Duration::from_secs(55), future)
+            .await
+            .context("LLM request timed out after 55 seconds")?
+            .context("Failed to send request to LLM")?;
+
+        #[cfg(target_arch = "wasm32")]
+        let response = future.await
+            .context("Failed to send request to LLM")?;
 
         let response_json: serde_json::Value = response.json().await
             .context("Failed to parse LLM response JSON")?;
@@ -100,14 +112,19 @@ impl LlmClient {
     }
 
     pub async fn send_chat_request(&self, request: &crate::agent::LlmRequest) -> Result<serde_json::Value> {
-        let response = tokio::time::timeout(
-            Duration::from_secs(55),
-            self.client.post(&format!("{}/v1/chat/completions", self.base_url))
+        let future = self.client.post(&format!("{}/v1/chat/completions", self.base_url))
                 .json(request)
-                .send()
-        ).await
-        .context("LLM request timed out after 55 seconds")?
-        .context("Failed to send request to LLM")?;
+                .send();
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let response = tokio::time::timeout(Duration::from_secs(55), future)
+            .await
+            .context("LLM request timed out after 55 seconds")?
+            .context("Failed to send request to LLM")?;
+
+        #[cfg(target_arch = "wasm32")]
+        let response = future.await
+            .context("Failed to send request to LLM")?;
 
         let response_json: serde_json::Value = response.json().await
             .context("Failed to parse LLM response JSON")?;

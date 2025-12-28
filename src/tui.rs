@@ -6,12 +6,12 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap, List, ListItem, ListState},
     Terminal,
 };
-use crossterm::event::{Event, KeyCode, KeyEventKind};
+use crate::input::{InputEvent, KeyCode, KeyEventKind, KeyEvent};
 
 // Trait for getting events (Native vs WASM)
-#[async_trait::async_trait]
+#[async_trait::async_trait(?Send)]
 pub trait EventSource {
-    async fn next_event(&mut self) -> Result<Option<Event>>;
+    async fn next_event(&mut self) -> Result<Option<InputEvent>>;
 }
 
 pub struct Tui<B: Backend, E: EventSource> {
@@ -51,7 +51,7 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
 
             // Wait for next event
             if let Some(event) = self.event_source.next_event().await? {
-                if let Event::Key(key) = event {
+                if let InputEvent::Key(key) = event {
                     if key.kind == KeyEventKind::Press {
                         // Handle quit key first, before any state checks
                         if key.code == KeyCode::Esc {
@@ -123,6 +123,8 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
             }
         }
     }
+    
+    // ... render methods remain identical as they use Frame which is Ratatui independent of event inputs ...
 
     fn render_splash_screen(frame: &mut Frame, game: &Game) {
         let chunks = Layout::default()
@@ -154,7 +156,7 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
 
         frame.render_stateful_widget(list, chunks[1], &mut state);
     }
-
+    
     fn render_naming_screen(frame: &mut Frame, game: &Game, _input_buffer: &str) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -289,10 +291,10 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
             .constraints(constraints.as_slice())
             .split(frame.area());
 
-        let top_chunks_idx = if game.world.combat.active { 2 } else { 1 };
-        let debug_chunks_start = if game.world.combat.active { 3 } else { 2 };
-        let input_chunk = if game.world.combat.active { 4 } else { 3 };
-        let status_chunk = if game.world.combat.active { 5 } else { 4 };
+        let top_chunks_idx = 0;
+        let debug_chunks_start = if game.world.combat.active { 2 } else { 1 };
+        let input_chunk = if game.world.combat.active { 3 } else { 2 };
+        let status_chunk = if game.world.combat.active { 4 } else { 3 };
 
         // Combat UI (only when active)
         if game.world.combat.active {
@@ -418,11 +420,47 @@ impl<B: Backend, E: EventSource> Tui<B, E> {
 pub struct CrosstermEventSource;
 
 #[cfg(not(target_arch = "wasm32"))]
-#[async_trait::async_trait]
+use crossterm::event as ct_event;
+
+#[cfg(not(target_arch = "wasm32"))]
+#[async_trait::async_trait(?Send)]
 impl EventSource for CrosstermEventSource {
-    async fn next_event(&mut self) -> Result<Option<Event>> {
-        if crossterm::event::poll(std::time::Duration::from_millis(10))? {  // Reduced from 100ms to 10ms
-            Ok(Some(crossterm::event::read()?))
+    async fn next_event(&mut self) -> Result<Option<InputEvent>> {
+        if ct_event::poll(std::time::Duration::from_millis(10))? {
+            let event = ct_event::read()?;
+            if let ct_event::Event::Key(key) = event {
+                // Map Crossterm KeyCode to InputEvent KeyCode
+                let code = match key.code {
+                    ct_event::KeyCode::Backspace => KeyCode::Backspace,
+                    ct_event::KeyCode::Enter => KeyCode::Enter,
+                    ct_event::KeyCode::Left => KeyCode::Left,
+                    ct_event::KeyCode::Right => KeyCode::Right,
+                    ct_event::KeyCode::Up => KeyCode::Up,
+                    ct_event::KeyCode::Down => KeyCode::Down,
+                    ct_event::KeyCode::Home => KeyCode::Home,
+                    ct_event::KeyCode::End => KeyCode::End,
+                    ct_event::KeyCode::PageUp => KeyCode::PageUp,
+                    ct_event::KeyCode::PageDown => KeyCode::PageDown,
+                    ct_event::KeyCode::Tab => KeyCode::Tab,
+                    ct_event::KeyCode::BackTab => KeyCode::BackTab,
+                    ct_event::KeyCode::Delete => KeyCode::Delete,
+                    ct_event::KeyCode::Insert => KeyCode::Insert,
+                    ct_event::KeyCode::F(n) => KeyCode::F(n),
+                    ct_event::KeyCode::Char(c) => KeyCode::Char(c),
+                    ct_event::KeyCode::Null => KeyCode::Null,
+                    ct_event::KeyCode::Esc => KeyCode::Esc,
+                    _ => return Ok(None), // Ignore other keys
+                };
+                
+                let kind = match key.kind {
+                    ct_event::KeyEventKind::Press => KeyEventKind::Press,
+                    ct_event::KeyEventKind::Repeat => KeyEventKind::Repeat,
+                    ct_event::KeyEventKind::Release => KeyEventKind::Release,
+                };
+                
+                return Ok(Some(InputEvent::Key(KeyEvent { code, kind })));
+            }
+            Ok(None)
         } else {
             Ok(None)
         }
