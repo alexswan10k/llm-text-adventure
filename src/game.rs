@@ -83,14 +83,36 @@ impl Game {
         let current_loc = self.world.locations.get(&self.world.current_pos)
             .ok_or_else(|| anyhow::anyhow!("Current location not found"))?;
 
+        // Collect information about existing neighbors to provide context
+        let mut neighbor_info = String::new();
+        let neighbors = [
+            ("North", (target_x, target_y + 1)),
+            ("South", (target_x, target_y - 1)),
+            ("East", (target_x + 1, target_y)),
+            ("West", (target_x - 1, target_y)),
+        ];
+
+        for (dir, pos) in neighbors.iter() {
+            if let Some(loc) = self.world.locations.get(pos) {
+                neighbor_info.push_str(&format!("- To the {} is '{}': {}\n", dir, loc.name, loc.description));
+            }
+        }
+
+        if neighbor_info.is_empty() {
+            neighbor_info = "None known.".to_string();
+        }
+
         let prompt = format!(
             r#"Current Location: {} at ({}, {})
 Description: {}
 
+Known Adjacent Locations (for context):
+{}
+
 The player is heading {} toward coordinates ({}, {}).
 This grid cell is currently EMPTY and needs to be generated.
 
-Create a new location at ({}, {}) that fits thematically with the current location.
+Create a new location at ({}, {}) that fits thematically with the current location and connects logically to any adjacent locations listed above.
 IMPORTANT: All exits must be null (blocked). The game will create actual exit connections automatically.
 
 Return ONLY a valid JSON object:
@@ -114,6 +136,7 @@ Just the JSON. Nothing else."#,
             self.world.current_pos.0,
             self.world.current_pos.1,
             current_loc.description,
+            neighbor_info,
             direction, target_x, target_y,
             target_x, target_y
         );
